@@ -1,0 +1,41 @@
+export const TUNING = {
+  gravity: 1520,
+  dt: 1 / 120,
+  maxSpeed: 1380,
+  airDrag: 0.22,
+  substepPx: 7,
+  pegE: 0.84,
+  goldE: 0.88,
+  reinforcedE: 0.58,
+  wallE: 0.52,
+  shutterE: 0.48,
+  bumperE: 0.1,
+  bumperKick: 490,
+  springKick: 680,
+  nudgeSpeed: 360,
+  comboWindow: 1.28,
+  comboStep: 0.12,
+  pegPay: 3,
+  reinforcedPay: 4,
+  goldPay: 6,
+  jackpotAt: 3,
+  researchCost: 8,
+  shopUpgrade: 22,
+  shopRelic: 34,
+  shopReroll: 6,
+  trailCost: 22,
+  challengeShards: 6,
+  previewSteps: 110,
+  previewDt: 1 / 90,
+}
+
+export const RESEARCH_ORDER = ['gravity-lens', 'glass-heart', 'ouroboros', 'clockwork-feather'] as const
+
+export const STARTER_RELICS = [
+  'spring-soul',
+  'golden-magnet',
+  'lucky-gear',
+  'broken-compass',
+  'heavy-crown',
+  'echo-core',
+] as const
