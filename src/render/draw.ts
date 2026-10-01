@@ -2,6 +2,8 @@ import { PALETTE, type Palette } from './palette'
 import type { Cam } from './camera'
 import { gapCenter, pegPose, shutterWalls, type Bin, type Board } from '../sim/board'
 import type { Drop } from '../sim/drop'
+import { drawAstrolabe, drawAtmosphere, drawEngraving } from './atmosphere'
+import type { BallDef } from '../content/catalog'
 
 export interface Particle {
   x: number
@@ -62,6 +64,7 @@ export interface DrawInput {
   trailColor: string
   time: number
   hitboxes: boolean
+  showcase: BallDef | null
 }
 
 const POP_LIFE = 0.28
@@ -173,8 +176,10 @@ export function drawFrame(input: DrawInput): void {
   ctx.globalAlpha = 1
   ctx.globalCompositeOperation = 'source-over'
   const pal = PALETTE[board?.theme ?? 'workshop']
-  drawBackdrop(ctx, cssW, cssH, pal, input.time)
-  if (board && input.drop) {
+  drawAtmosphere(ctx, cssW, cssH, pal, input.time, input.particlesOn)
+  if (input.showcase) {
+    drawAstrolabe(ctx, cssW, cssH, input.showcase, input.time)
+  } else if (board && input.drop) {
     ctx.save()
     ctx.translate(cssW / 2 + cam.shakeX, cssH / 2 + cam.shakeY)
     ctx.scale(cam.scale * cam.zoom, cam.scale * cam.zoom)
@@ -183,54 +188,6 @@ export function drawFrame(input: DrawInput): void {
     ctx.restore()
   }
   drawVignette(ctx, cssW, cssH, input.warp)
-}
-
-function hash(n: number): number {
-  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453
-  return s - Math.floor(s)
-}
-
-function drawBackdrop(ctx: CanvasRenderingContext2D, w: number, h: number, pal: Palette, time: number) {
-  const g = ctx.createLinearGradient(0, 0, 0, h)
-  g.addColorStop(0, pal.bg0)
-  g.addColorStop(1, pal.bg1)
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, w, h)
-  ctx.save()
-  ctx.translate(w * 0.14, h * 0.7)
-  ctx.rotate(time * 0.05)
-  strokeGear(ctx, 200, pal.frame, 0.07)
-  ctx.restore()
-  ctx.save()
-  ctx.translate(w * 0.9, h * 0.26)
-  ctx.rotate(-time * 0.07)
-  strokeGear(ctx, 130, pal.accent, 0.06)
-  ctx.restore()
-  ctx.save()
-  ctx.translate(w * 0.83, h * 0.86)
-  ctx.rotate(time * 0.11)
-  strokeGear(ctx, 70, pal.frame, 0.05)
-  ctx.restore()
-  const glowG = ctx.createRadialGradient(w / 2, h * 0.45, 40, w / 2, h * 0.5, Math.max(w, h) * 0.55)
-  glowG.addColorStop(0, hexAlpha(pal.accent, 0.08))
-  glowG.addColorStop(1, 'rgba(0,0,0,0)')
-  ctx.fillStyle = glowG
-  ctx.fillRect(0, 0, w, h)
-  // Dust motes drifting up through the workshop light.
-  ctx.globalCompositeOperation = 'lighter'
-  for (let i = 0; i < 46; i++) {
-    const speed = 6 + hash(i + 3) * 18
-    const x = (hash(i) * w + Math.sin(time * 0.3 + i) * 18 + w) % w
-    const y = (((hash(i + 7) * h - time * speed) % h) + h) % h
-    const a = 0.05 + 0.12 * hash(i + 11) * (0.6 + 0.4 * Math.sin(time * 1.3 + i * 2.1))
-    ctx.globalAlpha = a
-    ctx.fillStyle = i % 3 === 0 ? pal.accent : pal.frame
-    ctx.beginPath()
-    ctx.arc(x, y, 0.8 + hash(i + 5) * 1.8, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  ctx.globalAlpha = 1
-  ctx.globalCompositeOperation = 'source-over'
 }
 
 function drawVignette(ctx: CanvasRenderingContext2D, w: number, h: number, warp: number) {
@@ -242,27 +199,7 @@ function drawVignette(ctx: CanvasRenderingContext2D, w: number, h: number, warp:
   ctx.fillRect(0, 0, w, h)
 }
 
-function strokeGear(ctx: CanvasRenderingContext2D, r: number, color: string, alpha: number) {
-  ctx.beginPath()
-  const teeth = 12
-  for (let i = 0; i < teeth; i++) {
-    const a0 = (i / teeth) * Math.PI * 2
-    const a1 = ((i + 0.35) / teeth) * Math.PI * 2
-    const a2 = ((i + 0.65) / teeth) * Math.PI * 2
-    ctx.lineTo(Math.cos(a0) * r, Math.sin(a0) * r)
-    ctx.lineTo(Math.cos(a1) * (r + 16), Math.sin(a1) * (r + 16))
-    ctx.lineTo(Math.cos(a2) * (r + 16), Math.sin(a2) * (r + 16))
-  }
-  ctx.closePath()
-  ctx.strokeStyle = hexAlpha(color, alpha)
-  ctx.lineWidth = 3
-  ctx.stroke()
-  ctx.beginPath()
-  ctx.arc(0, 0, r * 0.45, 0, Math.PI * 2)
-  ctx.stroke()
-}
-
-function drawCabinet(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette) {
+function drawCabinet(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, time: number) {
   const x = 36
   const y = 18
   const w = board.w - 72
@@ -304,6 +241,7 @@ function drawCabinet(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
     ctx.stroke()
   }
   ctx.restore()
+  drawEngraving(ctx, board, pal, time)
   roundRect(ctx, x, y, w, h, 28)
   ctx.lineWidth = 12
   ctx.strokeStyle = pal.frameDeep
@@ -334,7 +272,7 @@ function drawCabinet(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
 }
 
 function drawBoard(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, input: DrawInput) {
-  drawCabinet(ctx, board, drop, pal)
+  drawCabinet(ctx, board, drop, pal, input.time)
   drawChute(ctx, board, pal)
   drawBins(ctx, board, drop, pal, input)
   drawZones(ctx, board, pal, input.time)
@@ -354,6 +292,18 @@ function drawBoard(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal:
     ctx.beginPath()
     ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * e, 0, Math.PI * 2)
     ctx.stroke()
+    // Faceted impact rays open out between the two shockwave fronts.
+    if (r.r1 >= 45) {
+      const radius = r.r0 + (r.r1 - r.r0) * e
+      ctx.lineWidth = Math.max(0.7, r.width * 0.35 * (1 - k))
+      for (let j = 0; j < 8; j++) {
+        const a = j * Math.PI / 4 + r.x * 0.1
+        ctx.beginPath()
+        ctx.moveTo(r.x + Math.cos(a) * radius * 0.8, r.y + Math.sin(a) * radius * 0.8)
+        ctx.lineTo(r.x + Math.cos(a) * radius * (1.18 - k * 0.18), r.y + Math.sin(a) * radius * (1.18 - k * 0.18))
+        ctx.stroke()
+      }
+    }
   }
   if (input.particlesOn) {
     ctx.lineCap = 'round'
@@ -385,6 +335,23 @@ function drawBoard(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal:
 function drawPegs(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, input: DrawInput) {
   const amp = board.boss && drop.coreHits >= 2 ? 2.1 : 1
   const popT = input.popT
+  // Brief filaments make a ricochet chain readable at a glance.
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = 0; i < board.pegs.length; i++) {
+    const flash = drop.flashPeg[i]
+    if (flash < 0.35 || drop.gone[i]) continue
+    const p = pegPose(board.pegs[i], drop.time, amp)
+    const distance = Math.hypot(p.x - drop.ball.x, p.y - drop.ball.y)
+    if (distance > 180) continue
+    ctx.strokeStyle = hexAlpha(pal.accent, flash * 0.24)
+    ctx.lineWidth = 1.3
+    ctx.beginPath()
+    ctx.moveTo(p.x, p.y)
+    ctx.lineTo(drop.ball.x, drop.ball.y)
+    ctx.stroke()
+  }
+  ctx.restore()
   // Additive halo pass: lit pegs breathe, fresh hits flare.
   ctx.globalCompositeOperation = 'lighter'
   for (let i = 0; i < board.pegs.length; i++) {
@@ -430,9 +397,27 @@ function drawPegs(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: 
     }
     ctx.globalAlpha = alpha
     const kind: PegLook = peg.kind === 'gold' || drop.gilded[i] ? 'gold' : peg.kind === 'reinforced' ? 'reinforced' : 'normal'
+    // Recessed sockets distinguish the play surface from the polished peg heads.
+    ctx.beginPath()
+    ctx.arc(pose.x, pose.y + 1, peg.r + 3.5, 0, Math.PI * 2)
+    ctx.fillStyle = '#03090f'
+    ctx.fill()
+    ctx.strokeStyle = hexAlpha(kind === 'gold' ? pal.gold : pal.accent, kind === 'gold' ? 0.45 : 0.15)
+    ctx.lineWidth = 1
+    ctx.stroke()
     const sprite = pegSprite(pal, kind, drop.lit[i])
     const size = peg.r * 3.3 * scale
     ctx.drawImage(sprite, pose.x - size / 2, pose.y - size / 2, size, size)
+    if (kind === 'gold') {
+      const a = input.time * 1.2 + i
+      const sx = pose.x + Math.cos(a) * (peg.r + 6)
+      const sy = pose.y + Math.sin(a) * (peg.r + 6)
+      ctx.fillStyle = pal.gold
+      ctx.globalAlpha = alpha * (0.45 + Math.sin(input.time * 2 + i) * 0.25)
+      ctx.fillRect(sx - 3, sy - 0.7, 6, 1.4)
+      ctx.fillRect(sx - 0.7, sy - 3, 1.4, 6)
+      ctx.globalAlpha = alpha
+    }
     if (peg.kind === 'vanish' && !vanishing) {
       ctx.strokeStyle = hexAlpha(pal.accent, 0.8)
       ctx.setLineDash([3, 3])
@@ -580,6 +565,30 @@ function drawPreview(ctx: CanvasRenderingContext2D, input: DrawInput, pal: Palet
 function drawLauncher(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, input: DrawInput) {
   const x = board.launchX
   const y = board.launchY
+  ctx.save()
+  ctx.translate(x, y)
+  ctx.strokeStyle = hexAlpha(pal.frame, 0.4)
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.arc(0, 0, 59, 0.18, Math.PI - 0.18)
+  ctx.stroke()
+  for (let i = -5; i <= 5; i++) {
+    const a = Math.PI / 2 + i * 0.12
+    ctx.beginPath()
+    ctx.moveTo(Math.cos(a) * 60, Math.sin(a) * 60)
+    ctx.lineTo(Math.cos(a) * (i % 5 ? 65 : 70), Math.sin(a) * (i % 5 ? 65 : 70))
+    ctx.stroke()
+  }
+  if (input.aiming) {
+    ctx.rotate(-input.aimAngle)
+    ctx.fillStyle = pal.accent
+    ctx.beginPath()
+    ctx.moveTo(0, 56)
+    ctx.lineTo(-4, 67)
+    ctx.lineTo(4, 67)
+    ctx.fill()
+  }
+  ctx.restore()
   ctx.lineCap = 'round'
   ctx.strokeStyle = pal.frameDeep
   ctx.lineWidth = 7
@@ -683,6 +692,13 @@ function drawBins(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: 
     fill.addColorStop(1, hexAlpha(color, hot ? 0.6 : armed ? base + 0.2 * pulse : base))
     ctx.fillStyle = fill
     ctx.fillRect(x0, top, x1 - x0, depth)
+    // Glass collector rim and inset panel, with a distinct shape for each pocket.
+    roundRect(ctx, x0, top + 12, x1 - x0, depth - 13, 8)
+    ctx.strokeStyle = hexAlpha(color, hot || armed ? 0.8 : 0.3)
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    ctx.fillStyle = hexAlpha(color, 0.35)
+    for (let j = 0; j < 3; j++) ctx.fillRect(x0 + 8 + j * 7, top + depth - 14, 3, 3)
     ctx.fillStyle = hexAlpha(color, hot ? 1 : 0.7)
     ctx.fillRect(x0 + 6, top + depth - 4, x1 - x0 - 12, 3)
     if (hot || armed) {
@@ -693,6 +709,15 @@ function drawBins(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: 
       ctx.fillStyle = beam
       ctx.fillRect(x0, top - (hot ? 320 : 140), x1 - x0, depth + (hot ? 320 : 140))
       ctx.globalCompositeOperation = 'source-over'
+      for (let j = 0; j < 4; j++) {
+        const t = (time * 0.5 + j / 4) % 1
+        ctx.globalAlpha = Math.sin(t * Math.PI) * (hot ? 0.9 : 0.4)
+        const bx = (x0 + x1) / 2 + Math.sin(j * 14) * (x1 - x0) * 0.32
+        const by = top + 70 - t * (hot ? 230 : 120)
+        ctx.fillStyle = color
+        ctx.fillRect(bx - 1, by - 4, 2, 8)
+      }
+      ctx.globalAlpha = 1
     }
     const mid = (bin.x0 + bin.x1) / 2
     if (bin.kind === 'hazard') {
@@ -763,12 +788,29 @@ function drawZones(ctx: CanvasRenderingContext2D, board: Board, pal: Palette, ti
       }
       ctx.restore()
     } else if (z.kind === 'portal') {
+      const tunnel = ctx.createRadialGradient(z.x, z.y, 1, z.x, z.y, z.r)
+      tunnel.addColorStop(0, '#020813')
+      tunnel.addColorStop(0.55, hexAlpha(pal.well, 0.16))
+      tunnel.addColorStop(0.9, hexAlpha(pal.accent, 0.32))
+      tunnel.addColorStop(1, hexAlpha(pal.accent, 0))
+      ctx.fillStyle = tunnel
+      ctx.beginPath()
+      ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2)
+      ctx.fill()
       ctx.globalCompositeOperation = 'lighter'
       glow(ctx, pal.accent, z.x, z.y, z.r * 2.4, 0.35 + 0.1 * Math.sin(time * 3))
       ctx.globalAlpha = 1
       ctx.globalCompositeOperation = 'source-over'
       ctx.strokeStyle = pal.accent
       ctx.lineWidth = 3
+      for (let j = 0; j < 10; j++) {
+        const a = time * 1.1 + j * Math.PI / 5
+        const r = z.r + 5 + Math.sin(time * 2 + j) * 3
+        ctx.fillStyle = hexAlpha(pal.accent, 0.3 + j / 16)
+        ctx.beginPath()
+        ctx.arc(z.x + Math.cos(a) * r, z.y + Math.sin(a) * r, j % 3 ? 1.3 : 2.2, 0, Math.PI * 2)
+        ctx.fill()
+      }
       for (let k = 0; k < 3; k++) {
         ctx.beginPath()
         ctx.arc(z.x, z.y, z.r - k * 6, time * (k % 2 ? -2 : 1.4) + k, time * (k % 2 ? -2 : 1.4) + k + Math.PI * 1.2)
@@ -904,6 +946,17 @@ function drawShutter(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
 function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time: number) {
   const b = drop.ball
   const color = trail || drop.ballDef.accent
+  if (drop.ballDef.id === 'void') {
+    ctx.save()
+    ctx.translate(b.x, b.y)
+    ctx.rotate(-0.5)
+    ctx.strokeStyle = hexAlpha(color, 0.5)
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.ellipse(0, 0, b.r * 1.7, b.r * 0.5, 0, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+  }
   ctx.globalCompositeOperation = 'lighter'
   if (drop.trail.length > 1) {
     ctx.lineCap = 'round'
@@ -918,6 +971,9 @@ function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time
       ctx.beginPath()
       ctx.moveTo(a.x, a.y)
       ctx.lineTo(c.x, c.y)
+      ctx.stroke()
+      ctx.strokeStyle = hexAlpha('#ffffff', k * 0.55)
+      ctx.lineWidth = Math.max(0.5, k * b.r * 0.24)
       ctx.stroke()
     }
     const head = drop.trail[n - 1]
@@ -948,6 +1004,25 @@ function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time
   ctx.arc(0, 0, b.r, 0, Math.PI * 2)
   ctx.fillStyle = g
   ctx.fill()
+  if (drop.ballDef.id === 'prism') {
+    ctx.save()
+    ctx.clip()
+    ctx.rotate(drop.spin * 0.4)
+    for (let i = 0; i < 6; i++) {
+      const a = i * Math.PI / 3
+      ctx.beginPath()
+      ctx.moveTo(-b.r * 0.2, -b.r * 0.2)
+      ctx.lineTo(Math.cos(a) * b.r, Math.sin(a) * b.r)
+      ctx.lineTo(Math.cos(a + Math.PI / 3) * b.r, Math.sin(a + Math.PI / 3) * b.r)
+      ctx.closePath()
+      ctx.fillStyle = i % 2 ? '#ffffff40' : '#06394b44'
+      ctx.fill()
+    }
+    ctx.restore()
+    // Restore the circular clipping path used by the rolling seam below.
+    ctx.beginPath()
+    ctx.arc(0, 0, b.r, 0, Math.PI * 2)
+  }
   // A seam that rolls with the sphere so spin reads.
   ctx.save()
   ctx.clip()

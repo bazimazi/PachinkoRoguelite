@@ -221,7 +221,11 @@ export class UI {
     const dt = Math.min(0.1, (now - this.lastT) / 1000)
     this.lastT = now
     const root = document.getElementById('app')
-    if (root) root.dataset.mode = view.screen
+    if (root) {
+      if (root.dataset.mode !== view.screen) root.dataset.mode = view.screen
+      const playfield = view.hud ? 'true' : 'false'
+      if (root.dataset.playfield !== playfield) root.dataset.playfield = playfield
+    }
     if (view.sig !== this.sig) {
       const prevKind = this.stage.dataset.kind
       this.sig = view.sig
@@ -431,30 +435,35 @@ function stageHtml(stage: StageModel): string {
     case 'hub':
       return `
         <div class="hub">
-          <div class="hub-copy">
-            <p class="eyebrow">The Helix</p>
-            <h1>Plumb</h1>
-            <p class="lede">You cannot hold the sphere. You can still decide its fall.</p>
-            <label class="seed">Seed
-              <input data-seed value="${esc(stage.seed)}" maxlength="12" spellcheck="false" placeholder="Random if empty" aria-label="Run seed" />
-            </label>
-            <div class="row">
-              <button class="ghost" data-act="random-seed">Randomize</button>
-              <button class="primary big" data-act="start">Begin the drop <kbd>Enter</kbd></button>
-            </div>
-            <div class="row quiet">
-              <button class="texty" data-act="help">How the fall works</button>
+          <header class="masthead">
+            <span class="wordmark"><i aria-hidden="true">✧</i> THE HELIX <span>EST. OUTSIDE TIME</span></span>
+            <nav aria-label="Main menu">
+              <button class="texty" data-act="help">How to play</button>
               <button class="texty" data-act="collection">Archive</button>
               <button class="texty" data-act="settings">Settings</button>
+            </nav>
+          </header>
+          <div class="hub-copy">
+            <p class="eyebrow"><span class="live-dot"></span> A pachinko roguelite</p>
+            <h1>Plumb</h1>
+            <p class="hero-line">Fortune favors<br><em>the falling.</em></p>
+            <p class="lede">One sphere. A beautiful chain reaction.<br>Find your fortune in the heart of the machine.</p>
+            <button class="primary big launch-button" data-act="start"><span>Begin the descent</span><span aria-hidden="true">↘</span><kbd>Enter</kbd></button>
+            <div class="seed-row">
+              <label class="seed"><span>Run seed</span>
+                <input data-seed value="${esc(stage.seed)}" maxlength="12" spellcheck="false" placeholder="Let fate decide" aria-label="Run seed" />
+              </label>
+              <button class="texty" data-act="random-seed" aria-label="Randomize seed" title="Randomize seed">↻</button>
             </div>
           </div>
+          <div class="specimen-caption" aria-hidden="true"><span>GRAVITATIONAL SPECIMEN / 0${stage.balls.findIndex(b => b.selected) + 1}</span><b>${esc(stage.balls.find(b => b.selected)?.name ?? '')}</b><i>Suspended between chance &amp; control</i></div>
           <div class="hub-balls">
-            <p class="eyebrow">Choose a sphere</p>
+            <div class="section-label"><p class="eyebrow">01 — Choose your sphere</p><span>Every heart falls differently</span></div>
             <div class="ball-row">${stage.balls.map((b, i) => ballHtml(b, i)).join('')}</div>
           </div>
           <footer class="hub-foot">
             <div><span>Shards</span><b>${stage.shards}</b></div>
-            <div><span>Best</span><b>${stage.best}</b></div>
+            <div><span>Best score</span><b>${stage.best.toLocaleString()}</b></div>
             <div><span>Falls</span><b>${stage.runs}</b></div>
             <button class="${stage.canStudy ? 'primary' : 'ghost'}" data-act="study" ${stage.canStudy ? '' : 'disabled'}>${esc(stage.study)}</button>
           </footer>
@@ -646,12 +655,14 @@ function orb(colors: [string, string, string]): string {
 
 function ballHtml(b: BallCard, i: number): string {
   if (b.locked) {
-    return `<article class="card ball locked" style="--i:${i}"><i class="orb"></i><div><h3>${esc(b.name)}</h3><p>${esc(b.reason)}</p></div></article>`
+    return `<article class="card ball locked" style="--i:${i};--sphere:${b.colors[0]}"><span class="ball-index">0${i + 1}</span>${orb(b.colors)}<div><span class="ball-state">◇ Dormant</span><h3>${esc(b.name)}</h3><p>${esc(b.reason)}</p></div></article>`
   }
   return `
-    <button class="card ball ${b.selected ? 'selected' : ''}" data-act="ball:${b.id}" style="--i:${i}">
+    <button class="card ball ${b.selected ? 'selected' : ''}" data-act="ball:${b.id}" aria-pressed="${b.selected}" style="--i:${i};--sphere:${b.colors[0]}">
+      <span class="ball-index">0${i + 1}</span>
       ${orb(b.colors)}
       <div>
+        <span class="ball-state">${b.selected ? '● Selected' : 'Available'}</span>
         <h3>${esc(b.name)}</h3>
         <p>${esc(b.tagline)}</p>
         <span class="tags">${esc(b.tags)}</span>
@@ -664,6 +675,7 @@ function choiceHtml(c: ChoiceCard, act: 'pick' | 'buy'): string {
   return `
     <button class="card offer ${c.synergy ? 'has-syn' : ''}" data-act="${act}:${c.index}" style="--i:${c.index}" ${c.afford ? '' : 'disabled'}>
       <kbd class="num">${c.index + 1}</kbd>
+      <span class="relic-art" aria-hidden="true">${['◇', '✧', '◎'][c.index % 3]}</span>
       ${head}
       <h3>${esc(c.name)}</h3>
       <span class="tags">${esc(c.tags)}</span>

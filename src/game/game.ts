@@ -63,8 +63,6 @@ export class Game {
   private run: Run | null = null
   private drop: Drop | null = null
   private demo: Drop | null = null
-  private demoAngle = -0.25
-  private demoWait = 0
   private offers: Offer[] = []
   private rerolls = 0
   private summary: Summary | null = null
@@ -118,6 +116,7 @@ export class Game {
   private readonly ui: UI
   private readonly sfx: Sfx
   private readonly debugEl: HTMLElement
+  private readonly motionQuery = matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor() {
     this.dev = import.meta.env.DEV
@@ -147,6 +146,8 @@ export class Game {
     document.documentElement.classList.toggle('lg', this.save.settings.large)
     this.resize()
     window.addEventListener('resize', () => this.resize())
+    // The mobile playfield reserves space for the HUD when a run begins.
+    new ResizeObserver(() => this.resize()).observe(this.canvas)
     this.spawnDemo()
     requestAnimationFrame((t) => this.frame(t))
   }
@@ -237,10 +238,7 @@ export class Game {
   }
 
   private fixed(dt: number): void {
-    if (this.attract()) {
-      this.stepDemo(dt)
-      return
-    }
+    if (this.attract()) return
     if (this.screen !== 'drop' || !this.drop) return
     if (this.drop.hitstop > 0) {
       this.drop.hitstop -= dt
@@ -254,28 +252,10 @@ export class Game {
     if (this.drop.captured || this.drop.dead) this.finishDrop()
   }
 
-  private stepDemo(dt: number): void {
-    if (!this.demo) this.spawnDemo()
-    const demo = this.demo
-    if (!demo) return
-    if (demo.captured || demo.dead) {
-      this.demoWait -= dt
-      if (this.demoWait <= 0) {
-        this.demoAngle = this.demoAngle > 0.3 ? -0.35 : this.demoAngle + 0.22
-        this.spawnDemo()
-      }
-      return
-    }
-    if (!demo.launched) demo.launch(this.demoAngle)
-    demo.step(dt, EMPTY)
-    demo.pullEvents()
-  }
-
   private spawnDemo(): void {
     const board = demoBoard()
     const profile = computeProfile('rubber', [], [])
     this.demo = new Drop(board, 'rubber', profile, 3, 3)
-    this.demoWait = 0.45
   }
 
   private animate(dt: number): void {
@@ -301,11 +281,12 @@ export class Game {
       this.camY += (target - this.camY) * (1 - Math.exp(-4.2 * dt))
     }
     this.trauma = Math.max(0, this.trauma - dt * 1.7)
-    const mag = this.trauma * this.trauma * (this.save.settings.shake ? 18 : 0)
+    const mag = this.trauma * this.trauma * (this.save.settings.shake && !this.motionQuery.matches ? 18 : 0)
     this.shakeX = (Math.random() * 2 - 1) * mag
     this.shakeY = (Math.random() * 2 - 1) * mag
     this.updateWarp(dt)
     this.zoom += (Math.max(this.zoomTarget, 1) - this.zoom) * (1 - Math.exp(-3 * dt))
+    if (this.motionQuery.matches) this.zoom = 1
     this.launchKick = Math.max(0, this.launchKick - dt * 3.2)
     this.cashIn(dt)
     if (!this.drop || this.drop.hitstop <= 0) {
@@ -365,18 +346,19 @@ export class Game {
       drop,
       preview: this.screen === 'aim' ? this.preview : [],
       aiming: this.screen === 'aim',
-      aimAngle: demo ? this.demoAngle : this.aimAngle,
+      aimAngle: this.aimAngle,
       particles: demo ? [] : this.particles,
       floaters: demo ? [] : this.floaters,
-      rings: demo ? [] : this.rings,
+      rings: demo || this.motionQuery.matches || !this.save.settings.particles ? [] : this.rings,
       popT: demo ? null : this.popT,
       launchKick: demo ? 0 : this.launchKick,
       warp: this.warp,
       multHot: !!drop && drop.mult >= TUNING.jackpotAt,
-      particlesOn: this.save.settings.particles,
+      particlesOn: this.save.settings.particles && !this.motionQuery.matches,
       trailColor: trail,
-      time,
+      time: this.motionQuery.matches ? 0 : time,
       hitboxes: this.hitboxes,
+      showcase: demo ? ballById(this.save.ball) : null,
     })
   }
 
@@ -850,7 +832,7 @@ export class Game {
     const big = !!e.big
     const pal = e.type === 'hazard' || e.type === 'shatter-ball' ? '#ff6b5a' : e.type === 'gold' || e.type === 'jackpot' || e.type === 'crit' ? '#ffd56a' : '#f4efe4'
     const accent = this.drop?.ballDef.accent ?? '#7ee0c6'
-    const fx = this.save.settings.particles
+    const fx = this.save.settings.particles && !this.motionQuery.matches
     const jitter = (Math.random() - 0.5) * 14
     if (e.text && (e.gears || big || e.type === 'refund' || e.type === 'special')) {
       const size = e.type === 'jackpot' ? 40 : big ? 28 : e.type === 'gold' ? 22 : e.gears && e.gears >= 20 ? 21 : 17
@@ -1033,7 +1015,7 @@ export class Game {
   }
 
   private flashAt(kind: ViewModel['flash'], time: number): void {
-    if (!this.save.settings.flash) return
+    if (!this.save.settings.flash || this.motionQuery.matches) return
     this.flash = kind
     this.flashT = time
   }
