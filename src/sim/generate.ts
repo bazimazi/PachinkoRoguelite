@@ -1,5 +1,5 @@
 import { irand } from '../core/rng'
-import { gapCenter, type Board, type LayoutId, type Peg, type ThemeName } from './board'
+import { gapCenter, shutterWalls, type Board, type LayoutId, type Peg, type ThemeName, type Wall } from './board'
 
 interface Spec {
   layout: LayoutId
@@ -193,9 +193,12 @@ export function createBoard(spec: Spec): Board {
     jackpot: p.jackpot,
   }
 
+  // Both extremes of the gate, so pegs stay clear wherever the walls swing.
+  const gateWalls = [...shutterWalls(board, 0), ...shutterWalls(board, 1)]
   const blocked = (x: number, y: number, rad: number) => {
     if (Math.hypot(x - board.launchX, y - board.launchY) < rad + 36) return true
     if (Math.abs(y - shutterY) < 34) return true
+    if (nearWalls(gateWalls, x, y, rad)) return true
     for (const b of board.bumpers) {
       if (Math.hypot(x - b.x, y - b.y) < rad + b.r + 8) return true
     }
@@ -278,7 +281,11 @@ export function createBoard(spec: Spec): Board {
 
   convertKind('reinforced', p.reinforced, (peg) => peg.kind === 'normal' && peg.y > shutterY && peg.y < shutterY + 420)
   convertKind('vanish', p.vanish, (peg) => peg.kind === 'normal' && peg.y > shutterY + 80)
-  convertKind('moving', p.moving, (peg) => peg.kind === 'normal' && peg.y > shutterY + 40 && peg.y < floorY - 200)
+  convertKind(
+    'moving',
+    p.moving,
+    (peg) => peg.kind === 'normal' && peg.y > shutterY + 40 && peg.y < floorY - 200 && !nearWalls(gateWalls, peg.x, peg.y, pegR + 36),
+  )
 
   if (p.springs) {
     const sx = p.w * (goldSide === 'right' ? 0.28 : 0.72)
@@ -374,6 +381,22 @@ export function createBoard(spec: Spec): Board {
     }
     if (made) board.features.push(name)
   }
+}
+
+/**
+ * True when a peg would sit so close to a gate wall that the gap between them is
+ * narrower than a sphere, which makes a wedge the ball can rattle in forever.
+ */
+function nearWalls(walls: Wall[], x: number, y: number, rad: number): boolean {
+  const clearance = 30 + 4
+  for (const w of walls) {
+    const dx = w.x2 - w.x1
+    const dy = w.y2 - w.y1
+    const t = Math.max(0, Math.min(1, ((x - w.x1) * dx + (y - w.y1) * dy) / (dx * dx + dy * dy || 1)))
+    const d = Math.hypot(x - (w.x1 + dx * t), y - (w.y1 + dy * t))
+    if (d < rad + w.r + clearance) return true
+  }
+  return false
 }
 
 function addArena(board: Board) {

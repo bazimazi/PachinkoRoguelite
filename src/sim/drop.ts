@@ -65,6 +65,9 @@ export class Drop {
   invuln = 0
   portalCd = 0
   stuck = 0
+  private anchorX = 0
+  private anchorY = 0
+  private anchorT = 0
   compass = 0
   gilds = 0
   featherUsed = false
@@ -86,10 +89,16 @@ export class Drop {
   squashAng = 0
   hitstop = 0
   flashPeg = new Float32Array(0)
+  /** Cosmetic: pegs struck this drop stay lit until the drop settles, in strike order. */
+  lit: boolean[] = []
+  litOrder: number[] = []
+  bumperFlash = new Float32Array(0)
   vanish = new Float32Array(0)
   gone: boolean[] = []
   gilded: boolean[] = []
   hitCd = new Float32Array(0)
+  /** A peg only pays again after this cools down, so a rattling ball cannot farm it. */
+  payCd = new Float32Array(0)
   springCd: number[] = []
   events: SimEvent[] = []
   trail: { x: number; y: number }[] = []
@@ -113,8 +122,11 @@ export class Drop {
     this.flashPeg = new Float32Array(n)
     this.vanish = new Float32Array(n)
     this.hitCd = new Float32Array(n)
+    this.payCd = new Float32Array(n)
     this.gone = board.pegs.map(() => false)
     this.gilded = board.pegs.map(() => false)
+    this.lit = board.pegs.map(() => false)
+    this.bumperFlash = new Float32Array(board.bumpers.length)
     this.springCd = board.zones.map(() => 0)
   }
 
@@ -162,8 +174,10 @@ export class Drop {
     }
     if (this.squash > 0) this.squash = Math.max(0, this.squash - dt * 2.4)
     for (let i = 0; i < this.hitCd.length; i++) if (this.hitCd[i] > 0) this.hitCd[i] -= dt
+    for (let i = 0; i < this.payCd.length; i++) if (this.payCd[i] > 0) this.payCd[i] -= dt
     for (let i = 0; i < this.flashPeg.length; i++) if (this.flashPeg[i] > 0) this.flashPeg[i] -= dt * 3.2
     for (let i = 0; i < this.vanish.length; i++) if (this.vanish[i] > 0) this.vanish[i] -= dt
+    for (let i = 0; i < this.bumperFlash.length; i++) if (this.bumperFlash[i] > 0) this.bumperFlash[i] -= dt * 4
     for (let i = 0; i < this.springCd.length; i++) if (this.springCd[i] > 0) this.springCd[i] -= dt
 
     if (this.featherT > 0) {
@@ -409,7 +423,8 @@ export class Drop {
         this.onPeg(i, impact, pose.x, pose.y)
       }
     }
-    for (const b of this.board.bumpers) {
+    for (let bi = 0; bi < this.board.bumpers.length; bi++) {
+      const b = this.board.bumpers[bi]
       if (b.core && this.coreOpen) continue
       const dx = ball.x - b.x
       const dy = ball.y - b.y
@@ -423,6 +438,7 @@ export class Drop {
         if (vn < -40 && this.coreCd <= 0 && !this.wonBoss) {
           this.coreCd = 0.48
           this.coreHits += 1
+          this.bumperFlash[bi] = 1
           this.events.push({
             type: 'core',
             x: b.x,
@@ -457,6 +473,7 @@ export class Drop {
       ball.vy = -Math.max(420, Math.abs(ball.vy) * 0.35 + TUNING.bumperKick * 0.72)
       this.noteBounce(before, 300)
       this.squash = 0.4
+      this.bumperFlash[bi] = 1
       this.onBumper(b.x, b.y, nx, ny)
     }
   }
@@ -483,6 +500,12 @@ export class Drop {
 
   private onPeg(i: number, impact: number, x: number, y: number): void {
     const peg = this.board.pegs[i]
+    const repeat = this.payCd[i] > 0
+    this.payCd[i] = 0.6
+    if (repeat) {
+      this.flashPeg[i] = Math.max(this.flashPeg[i], 0.5)
+      return
+    }
     if (this.profile.gildMax && !this.gilded[i] && peg.kind !== 'gold' && this.gilds < this.profile.gildMax) {
       const rowTaken = this.gildedRow(peg.row)
       if (!rowTaken) {
@@ -493,6 +516,10 @@ export class Drop {
     const gold = peg.kind === 'gold' || this.gilded[i]
     if (peg.kind === 'vanish') this.vanish[i] = 1.45
     this.flashPeg[i] = 1
+    if (!this.lit[i]) {
+      this.lit[i] = true
+      this.litOrder.push(i)
+    }
     this.pegs += 1
     if (gold) {
       this.golds += 1
@@ -647,6 +674,7 @@ export class Drop {
 
   private antiStuck(dt: number): void {
     if (this.captured || this.dead) return
+    if (this.drifted(dt)) return
     const sp = len(this.ball.vx, this.ball.vy)
     if (sp < 58 && this.ball.y < this.board.floorY - 8) this.stuck += dt
     else this.stuck = 0
@@ -672,6 +700,42 @@ export class Drop {
     this.ball.vy += 180
   }
 
+  /**
+   * A ball can rattle inside a wedge fast enough to never look slow, so also watch
+   * how far it actually travels. If it stays in a small circle, the pegs pinning it break.
+   */
+  private drifted(dt: number): boolean {
+    const ball = this.ball
+    if (ball.y >= this.board.floorY - 8 || Math.hypot(ball.x - this.anchorX, ball.y - this.anchorY) > 26) {
+      this.anchorX = ball.x
+      this.anchorY = ball.y
+      this.anchorT = 0
+      return false
+    }
+    this.anchorT += dt
+    if (this.anchorT < 0.7) return false
+    this.anchorT = 0
+    let freed = false
+    for (let i = 0; i < this.board.pegs.length; i++) {
+      if (!this.solid(i)) continue
+      const p = this.pose(i)
+      if (Math.hypot(p.x - ball.x, p.y - ball.y) > ball.r + this.board.pegs[i].r + 10) continue
+      this.gone[i] = true
+      this.events.push({ type: 'collapse', x: p.x, y: p.y })
+      freed = true
+    }
+    if (!freed) {
+      // Pinned by walls alone: throw it toward the open middle.
+      const toward = ball.x < this.board.w / 2 ? 1 : -1
+      ball.x += toward * 4
+      ball.vx = toward * 280
+      ball.vy = Math.abs(ball.vy) < 120 ? -220 : ball.vy * -0.5
+    }
+    this.combo = 0
+    this.comboTimer = 0
+    return true
+  }
+
   private capture(): void {
     if (this.captured || this.dead) return
     const y = this.ball.y
@@ -680,7 +744,16 @@ export class Drop {
     if (y < floor + 36) return
     if (sp > 150 && y < floor + 110) return
     const kind = this.binAt(this.ball.x)
-    if (this.board.boss && !this.coreOpen && kind === 'jackpot') return
+    if (this.board.boss && !this.coreOpen && kind === 'jackpot') {
+      // The sealed maw refuses the sphere. Resting on it would end nothing, so it spits the ball back at the core.
+      if (sp < 90) {
+        this.ball.vy = -1020
+        this.ball.vx = (this.ball.x < this.board.w / 2 ? -1 : 1) * 120
+        this.squash = 0.4
+        this.events.push({ type: 'seal', x: this.ball.x, y: this.ball.y })
+      }
+      return
+    }
     this.finishCapture(kind)
   }
 

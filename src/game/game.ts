@@ -6,7 +6,8 @@ import { Input } from '../input'
 import { grantChallenges } from '../meta/challenges'
 import { loadSave, shardsFor, writeSave, type SaveData } from '../meta/save'
 import { type Cam, machineScale, screenToWorld } from '../render/camera'
-import { drawFrame, type Floater, type Particle } from '../render/draw'
+import { drawFrame, type Floater, type Particle, type Ring } from '../render/draw'
+import { pegPose, type Board, type BinKind } from '../sim/board'
 import { Drop, previewPath, type Cmd } from '../sim/drop'
 import { createBoard, demoBoard } from '../sim/generate'
 import { computeProfile, type Profile } from '../sim/profile'
@@ -16,6 +17,13 @@ import { randomFrom, rollReward, rollShop, type Offer } from './offers'
 import { UI, type ChoiceCard, type HudModel, type StageModel, type SummaryModel, type ViewModel } from '../ui/ui'
 
 const EMPTY: Cmd = { nudge: 0, flip: false, special: false, tilt: false, aimX: 0 }
+
+const COMBO_CALLS: Record<number, string> = { 5: 'Nice chain', 10: 'Great chain', 15: 'Rattling!', 20: 'Unstoppable', 30: 'Helix hum' }
+
+function binKindAt(board: Board, x: number): BinKind | null {
+  for (const b of board.bins) if (x >= b.x0 && x <= b.x1) return b.kind
+  return null
+}
 
 interface Run {
   seed: string
@@ -75,6 +83,13 @@ export class Game {
   private camY = 400
   private snapCam = true
   private zoom = 1
+  private zoomTarget = 1
+  /** Real-time multiplier on the fixed-step accumulator. Physics stays identical, it just runs slower. */
+  private warp = 1
+  private launchKick = 0
+  private rings: Ring[] = []
+  private popT: Float32Array | null = null
+  private cash: { order: number[]; next: number; t: number; step: number } | null = null
   private trauma = 0
   private shakeX = 0
   private shakeY = 0
@@ -159,7 +174,7 @@ export class Game {
       this.fpsT = 0
     }
     this.collectEdges()
-    this.accum += dt
+    this.accum += dt * this.warp
     let steps = 0
     while (this.accum >= TUNING.dt && steps < 8) {
       this.fixed(TUNING.dt)
@@ -289,20 +304,29 @@ export class Game {
     const mag = this.trauma * this.trauma * (this.save.settings.shake ? 18 : 0)
     this.shakeX = (Math.random() * 2 - 1) * mag
     this.shakeY = (Math.random() * 2 - 1) * mag
-    this.zoom += (1 - this.zoom) * (1 - Math.exp(-3 * dt))
-    if (this.drop && this.drop.hitstop <= 0) {
+    this.updateWarp(dt)
+    this.zoom += (Math.max(this.zoomTarget, 1) - this.zoom) * (1 - Math.exp(-3 * dt))
+    this.launchKick = Math.max(0, this.launchKick - dt * 3.2)
+    this.cashIn(dt)
+    if (!this.drop || this.drop.hitstop <= 0) {
+      const vdt = dt * (0.35 + 0.65 * this.warp)
+      const drag = Math.exp(-2.6 * vdt)
       for (const p of this.particles) {
-        p.life -= dt
-        p.vy += 30 * dt
-        p.x += p.vx * dt
-        p.y += p.vy * dt
+        p.life -= vdt
+        p.vy += (p.streak ? 520 : 60) * vdt
+        p.vx *= drag
+        p.vy *= drag
+        p.x += p.vx * vdt
+        p.y += p.vy * vdt
       }
-      this.particles = this.particles.filter((p) => p.life > 0).slice(-180)
+      this.particles = this.particles.filter((p) => p.life > 0).slice(-260)
       for (const f of this.floaters) {
-        f.life -= dt
-        f.y -= 34 * dt
+        f.life -= vdt
+        f.y -= 70 * vdt * (f.life / f.max)
       }
-      this.floaters = this.floaters.filter((f) => f.life > 0).slice(-20)
+      this.floaters = this.floaters.filter((f) => f.life > 0).slice(-28)
+      for (const r of this.rings) r.life -= vdt
+      this.rings = this.rings.filter((r) => r.life > 0).slice(-40)
     }
     if (this.toastT > 0) {
       this.toastT -= dt
@@ -330,6 +354,7 @@ export class Game {
       shakeY: this.shakeY,
     }
     const trail = TRAILS.find((t) => t.id === this.save.trail)?.color ?? ''
+    const demo = this.attract()
     drawFrame({
       ctx: this.ctx,
       cssW: this.cssW,
@@ -340,9 +365,14 @@ export class Game {
       drop,
       preview: this.screen === 'aim' ? this.preview : [],
       aiming: this.screen === 'aim',
-      aimAngle: this.aimAngle,
-      particles: this.particles,
-      floaters: this.floaters,
+      aimAngle: demo ? this.demoAngle : this.aimAngle,
+      particles: demo ? [] : this.particles,
+      floaters: demo ? [] : this.floaters,
+      rings: demo ? [] : this.rings,
+      popT: demo ? null : this.popT,
+      launchKick: demo ? 0 : this.launchKick,
+      warp: this.warp,
+      multHot: !!drop && drop.mult >= TUNING.jackpotAt,
       particlesOn: this.save.settings.particles,
       trailColor: trail,
       time,
@@ -394,7 +424,8 @@ export class Game {
     const scale = machineScale(this.cssW, board.w)
     const half = this.cssH / scale / 2
     let y = board.h * 0.34
-    if (!this.attract() && this.screen === 'aim') y = (board.shutterY ?? board.h * 0.36) - 40
+    // Frame the launcher at the top so the barrel and the aim line read together.
+    if (!this.attract() && this.screen === 'aim') y = Math.min((board.shutterY ?? board.h * 0.36) - 40, board.launchY - 70 + half)
     else if (drop?.launched) y = drop.ball.y + clamp(drop.ball.vy * 0.1, -30, 200)
     const max = board.h - half
     if (max <= half) return board.h / 2
@@ -407,6 +438,13 @@ export class Game {
     const angle = this.currentAngle()
     this.aimAngle = angle
     this.drop.launch(angle)
+    this.launchKick = 1
+    const pal = this.drop.ballDef.accent
+    const mx = this.drop.board.launchX + Math.sin(angle) * 44
+    const my = this.drop.board.launchY + Math.cos(angle) * 44
+    this.ring(mx, my, 8, 60, 0.35, pal, 4)
+    if (this.save.settings.particles) this.sparks(mx, my, pal, 12, 260, Math.atan2(Math.cos(angle), Math.sin(angle)), 0.7)
+    this.trauma = Math.min(1, this.trauma + 0.25)
     this.run.launchedOnce = true
     this.screen = 'drop'
     this.preview = []
@@ -486,6 +524,12 @@ export class Game {
       if (!this.save.seenParts.includes(feature)) this.save.seenParts.push(feature)
     }
     this.drop = new Drop(board, run.ballId, run.profile, run.integrity, run.integrityMax)
+    this.popT = new Float32Array(board.pegs.length)
+    this.cash = null
+    this.rings = []
+    this.floaters = []
+    this.warp = 1
+    this.zoomTarget = 1
     this.screen = 'aim'
     this.mouseAim = false
     this.keyboardAim = 0
@@ -513,19 +557,23 @@ export class Game {
     drop.hitstop = 0
     const win = drop.wonBoss
     const boss = node.kind === 'boss'
-    if (win && drop.jackpot) this.resolveCopy = { title: 'Jackpot', sub: `The maw pays. This drop ${drop.earned}.` }
+    if (win && drop.jackpot) this.resolveCopy = { title: 'Jackpot', sub: 'The maw pays.' }
     else if (win && drop.captured === 'jackpot') this.resolveCopy = { title: 'The Grinder falls', sub: 'The maw was cold. The core is still broken.' }
     else if (win) this.resolveCopy = { title: 'The Grinder falls', sub: 'You broke the core and missed the maw.' }
     else if (boss) this.resolveCopy = { title: 'The Grinder keeps you', sub: `${drop.coreHits} of 5 hits.` }
-    else if (drop.dead) this.resolveCopy = { title: 'The shell opens', sub: `The fall ends. This drop ${drop.earned}.` }
-    else this.resolveCopy = { title: this.resolveCopy.title || 'Settled', sub: `${this.resolveCopy.sub} · this drop ${drop.earned}${drop.hazardThis === 0 ? ' · clean' : ''}` }
+    else if (drop.dead) this.resolveCopy = { title: 'The shell opens', sub: 'The fall ends.' }
+    else this.resolveCopy = { title: this.resolveCopy.title || 'Settled', sub: [this.resolveCopy.sub, drop.hazardThis === 0 ? 'clean drop' : ''].filter(Boolean).join(' · ') }
     this.screen = 'resolve'
-    this.resolveT = drop.jackpot || win ? 1.5 : 0.9
+    const lit = drop.litOrder.filter((i) => !drop.gone[i])
+    const step = clamp(0.95 / Math.max(1, lit.length), 0.022, 0.07)
+    this.cash = { order: lit, next: 0, t: -0.18, step }
+    this.resolveT = Math.max(drop.jackpot || win ? 1.6 : 1, lit.length * step + 0.75)
     this.toast = null
   }
 
   private skipResolve(): void {
     if (this.screen !== 'resolve' || !this.run || !this.drop) return
+    this.finishCash()
     const node = this.run.nodes[this.run.nodeId]
     const win = this.drop.wonBoss
     const failed = this.drop.dead || (node.kind === 'boss' && !win)
@@ -751,6 +799,12 @@ export class Game {
     this.screen = 'hub'
     this.run = null
     this.drop = null
+    this.popT = null
+    this.cash = null
+    this.rings = []
+    this.particles = []
+    this.floaters = []
+    this.warp = 1
     this.returnTo = 'hub'
     this.spawnDemo()
     this.snapCam = true
@@ -792,20 +846,69 @@ export class Game {
     run.integrity = drop.integrity
   }
 
-  private react(e: { type: string; x: number; y: number; text?: string; gears?: number; big?: boolean; combo?: number }): void {
+  private react(e: { type: string; x: number; y: number; text?: string; gears?: number; big?: boolean; combo?: number; mult?: number }): void {
     const big = !!e.big
-    const pal = e.type === 'hazard' || e.type === 'shatter-ball' ? '#ff6b5a' : e.type === 'gold' || e.type === 'jackpot' ? '#ffd56a' : '#f4efe4'
+    const pal = e.type === 'hazard' || e.type === 'shatter-ball' ? '#ff6b5a' : e.type === 'gold' || e.type === 'jackpot' || e.type === 'crit' ? '#ffd56a' : '#f4efe4'
+    const accent = this.drop?.ballDef.accent ?? '#7ee0c6'
+    const fx = this.save.settings.particles
+    const jitter = (Math.random() - 0.5) * 14
     if (e.text && (e.gears || big || e.type === 'refund' || e.type === 'special')) {
-      this.floaters.push({ x: e.x, y: e.y - 16, text: e.text, life: 0.8, max: 0.8, color: pal })
+      const size = e.type === 'jackpot' ? 40 : big ? 28 : e.type === 'gold' ? 22 : e.gears && e.gears >= 20 ? 21 : 17
+      this.floaters.push({ x: e.x + jitter, y: e.y - 18, text: e.text, life: 0.9, max: 0.9, color: pal, size })
     }
-    if (this.save.settings.particles && e.type !== 'combo' && e.type !== 'mult') {
-      this.burst(e.x, e.y, pal, big ? 16 : 7, big ? 180 : 90)
+    if (e.type === 'mult' && e.mult) {
+      this.floaters.push({ x: e.x, y: e.y - 34, text: formatMult(e.mult), life: 0.7, max: 0.7, color: '#ffd56a', size: 15 })
+    }
+    if (e.type === 'combo' && e.combo && COMBO_CALLS[e.combo]) {
+      this.floaters.push({ x: e.x, y: e.y - 56, text: COMBO_CALLS[e.combo], life: 1.1, max: 1.1, color: '#7ee0c6', size: 26 + Math.min(14, e.combo) })
+      this.ring(e.x, e.y, 16, 120, 0.5, accent, 5)
+      this.sfx.combo(e.combo)
+    }
+    if (fx) {
+      if (e.type === 'peg' || e.type === 'spring') {
+        this.ring(e.x, e.y, 10, 30, 0.28, accent, 3)
+        this.sparks(e.x, e.y, pal, 5, 170)
+      } else if (e.type === 'gold') {
+        this.ring(e.x, e.y, 10, 46, 0.38, '#ffd56a', 4)
+        this.sparks(e.x, e.y, '#ffd56a', 12, 240)
+      } else if (e.type === 'bumper' || e.type === 'echo' || e.type === 'seal') {
+        this.ring(e.x, e.y, 28, 96, 0.4, '#e0b07a', 6)
+        this.sparks(e.x, e.y, '#ffe2b8', 14, 300)
+      } else if (e.type === 'shatter') {
+        this.sparks(e.x, e.y, '#ffffff', 18, 320)
+        this.burst(e.x, e.y, '#f4efe4', 10, 120)
+      } else if (e.type === 'hazard' || e.type === 'shatter-ball') {
+        this.ring(e.x, e.y, 14, 110, 0.5, '#ff6b5a', 6)
+        this.sparks(e.x, e.y, '#ff6b5a', 20, 320)
+      } else if (e.type === 'jackpot') {
+        this.ring(e.x, e.y, 20, 420, 0.9, '#ffd56a', 10)
+        this.ring(e.x, e.y, 10, 240, 0.7, '#ffffff', 5)
+        this.sparks(e.x, e.y, '#ffd56a', 48, 620, -Math.PI / 2, 1.1)
+        this.burst(e.x, e.y, '#fff6d0', 24, 260)
+      } else if (e.type === 'pocket') {
+        const color = e.gears ? '#ffd56a' : '#ff6b5a'
+        this.ring(e.x, e.y, 14, big ? 200 : 120, 0.55, color, 5)
+        this.sparks(e.x, e.y, color, big ? 26 : 14, big ? 460 : 300, -Math.PI / 2, 1)
+      } else if (e.type === 'core') {
+        this.ring(e.x, e.y, 36, 160, 0.5, '#e6f27a', 7)
+        this.sparks(e.x, e.y, '#e6f27a', 20, 380)
+      } else if (e.type === 'portal' || e.type === 'crit' || e.type === 'maw') {
+        this.ring(e.x, e.y, 10, 90, 0.45, e.type === 'crit' ? '#ffd56a' : accent, 5)
+        this.sparks(e.x, e.y, e.type === 'crit' ? '#ffd56a' : accent, 14, 280)
+      } else if (e.type === 'nudge') {
+        this.sparks(e.x, e.y, accent, 6, 160, e.text === '◀' ? 0 : Math.PI, 0.5)
+      } else if (e.type === 'collapse') {
+        this.burst(e.x, e.y, '#d5dee3', 10, 120)
+      }
     }
     if (big) this.trauma = Math.min(1, this.trauma + 0.55)
-    else if (e.type === 'peg' || e.type === 'bumper' || e.type === 'gold') this.trauma = Math.min(1, this.trauma + 0.14)
-    if (big && this.drop) this.drop.hitstop = Math.max(this.drop.hitstop, e.type === 'jackpot' ? 0.07 : 0.035)
+    else if (e.type === 'bumper') this.trauma = Math.min(1, this.trauma + 0.2)
+    else if (e.type === 'gold') this.trauma = Math.min(1, this.trauma + 0.12)
+    else if (e.type === 'peg') this.trauma = Math.min(1, this.trauma + 0.06)
+    if (big && this.drop) this.drop.hitstop = Math.max(this.drop.hitstop, e.type === 'jackpot' ? 0.09 : 0.04)
+    else if (e.type === 'gold' && this.drop) this.drop.hitstop = Math.max(this.drop.hitstop, 0.018)
     if (e.type === 'jackpot') {
-      this.zoom = 1.07
+      this.zoom = 1.12
       this.flashAt('gold', 0.45)
       this.say('Jackpot', e.gears ? `+${e.gears}` : '', 1.6, true)
       this.sfx.jackpot()
@@ -822,7 +925,7 @@ export class Game {
       this.say(`Core ${e.text ?? ''}`, '', 0.7, true)
     } else if (e.type === 'maw') {
       this.say('The maw opens', 'Steer it home.', 1.3, true)
-      this.zoom = 1.06
+      this.zoom = 1.08
     } else if (e.type === 'feather') {
       this.say('The clock skips', '', 1, true)
     } else if (e.type === 'launch') this.sfx.launch()
@@ -830,9 +933,9 @@ export class Game {
     else if (e.type === 'nudge') this.sfx.nudge()
     else if (e.type === 'gold') this.sfx.gold(e.combo ?? 1)
     else if (e.type === 'peg' || e.type === 'spring') this.sfx.peg(e.combo ?? 1)
-    else if (e.type === 'bumper' || e.type === 'echo') this.sfx.bumper()
+    else if (e.type === 'bumper' || e.type === 'echo' || e.type === 'seal') this.sfx.bumper()
     else if (e.type === 'shatter') this.sfx.shatter()
-    else if (e.type === 'pocket') this.sfx.pocket()
+    else if (e.type === 'pocket') this.sfx.pocket(!!e.gears)
     else if (e.type === 'portal' || e.type === 'crit') this.sfx.gold(6)
   }
 
@@ -845,12 +948,81 @@ export class Game {
         y,
         vx: Math.cos(a) * s,
         vy: Math.sin(a) * s,
-        life: 0.35 + Math.random() * 0.25,
-        max: 0.6,
+        life: 0.35 + Math.random() * 0.35,
+        max: 0.7,
         color,
         size: 1.5 + Math.random() * 2.2,
       })
     }
+  }
+
+  /** Streaking sparks, optionally aimed in a cone around `dir`. */
+  private sparks(x: number, y: number, color: string, n: number, speed: number, dir = 0, spread = Math.PI): void {
+    for (let i = 0; i < n; i++) {
+      const a = dir + (Math.random() * 2 - 1) * spread
+      const s = speed * (0.45 + Math.random() * 0.8)
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        life: 0.25 + Math.random() * 0.3,
+        max: 0.55,
+        color,
+        size: 1.6 + Math.random() * 1.8,
+        streak: true,
+      })
+    }
+  }
+
+  private ring(x: number, y: number, r0: number, r1: number, life: number, color: string, width: number): void {
+    this.rings.push({ x, y, r0, r1, life, max: life, color, width })
+  }
+
+  /** Slow the fall when the sphere is about to land somewhere that matters. */
+  private updateWarp(dt: number): void {
+    let target = 1
+    const d = this.drop
+    if (this.screen === 'drop' && d && d.launched && !d.captured && !d.dead && d.ball.vy > 0) {
+      const b = d.board
+      if (d.ball.y > b.floorY - 190 && d.ball.y < b.floorY + 60) {
+        const kind = binKindAt(b, d.ball.x + d.ball.vx * 0.12)
+        const hot = (kind === 'jackpot' && (b.boss ? d.coreOpen : d.mult >= TUNING.jackpotAt)) || (kind === 'bonus' && d.mult >= 2)
+        if (hot) target = 0.32
+      }
+    }
+    this.warp += (target - this.warp) * (1 - Math.exp(-(target < this.warp ? 10 : 5) * dt))
+    this.zoomTarget = target < 1 ? 1.1 : 1
+  }
+
+  /** Peggle-style settle: pegs struck this drop pop one after another. */
+  private cashIn(dt: number): void {
+    const cash = this.cash
+    const drop = this.drop
+    const popT = this.popT
+    if (popT) for (let i = 0; i < popT.length; i++) if (popT[i] > 0) popT[i] += dt
+    if (!cash || !drop || !popT) return
+    cash.t += dt
+    const pal = drop.ballDef.accent
+    while (cash.next < cash.order.length && cash.t >= cash.next * cash.step) {
+      const i = cash.order[cash.next++]
+      const peg = drop.board.pegs[i]
+      popT[i] = 0.0001
+      const pose = pegPose(peg, drop.time, drop.board.boss && drop.coreHits >= 2 ? 2.1 : 1)
+      const gold = peg.kind === 'gold' || drop.gilded[i]
+      if (this.save.settings.particles) {
+        this.sparks(pose.x, pose.y, gold ? '#ffd56a' : pal, gold ? 8 : 5, 200)
+        this.ring(pose.x, pose.y, 6, gold ? 40 : 28, 0.3, gold ? '#ffd56a' : pal, 3)
+      }
+      this.sfx.pop(cash.next, gold)
+    }
+    if (cash.next >= cash.order.length) this.cash = null
+  }
+
+  private finishCash(): void {
+    if (!this.cash || !this.popT) return
+    for (let k = this.cash.next; k < this.cash.order.length; k++) this.popT[this.cash.order[k]] = 1
+    this.cash = null
   }
 
   private say(title: string, sub: string, time: number, big: boolean): void {
@@ -942,6 +1114,7 @@ export class Game {
     }
     const drop = this.drop
     const live = this.screen === 'aim' || this.screen === 'drop'
+    const start = this.run.profile.startMult
     const gate = drop.board.shutterY != null ? `Gate ${drop.gapT < 0.5 ? 'left' : 'right'} · gold ${drop.board.goldSide}` : ''
     return {
       gears: this.run.gears,
@@ -949,7 +1122,13 @@ export class Game {
       shell: live ? drop.integrity : this.run.integrity,
       shellMax: this.run.integrityMax,
       mult: formatMult(drop.mult),
+      multT: clamp((drop.mult - start) / Math.max(0.1, TUNING.jackpotAt - start), 0, 1),
+      multHot: drop.mult >= TUNING.jackpotAt,
+      jackpotAt: formatMult(TUNING.jackpotAt),
       combo: this.screen === 'drop' ? drop.combo : 0,
+      comboT: this.screen === 'drop' && drop.combo > 0 ? clamp(drop.comboTimer / this.run.profile.comboWindow, 0, 1) : 0,
+      earned: drop.earned,
+      tally: this.screen === 'drop' && drop.earned > 0,
       nudges: drop.nudges,
       maxNudges: drop.maxNudges,
       specials: drop.specials,
@@ -984,6 +1163,7 @@ export class Game {
             name: ball.name,
             tagline: ball.tagline,
             tags: ball.tags.join(' · '),
+            colors: [ball.accent, ball.color, ball.core],
             locked: !this.save.balls.includes(ball.id),
             reason: ball.id === 'prism' ? 'Awakens after your first fall.' : 'Reach the Gravity Core, or finish two falls.',
             selected: this.save.ball === ball.id,
@@ -1044,8 +1224,11 @@ export class Game {
         }
       case 'bargain':
         return { kind: 'bargain', canShell: !!run && run.integrity > 1, canPay: !!run && run.gears >= 30 }
-      case 'resolve':
-        return { kind: 'resolve', title: this.resolveCopy.title, sub: this.resolveCopy.sub }
+      case 'resolve': {
+        const d = this.drop
+        const tone = !d ? 'good' : d.dead || d.captured === 'hazard' ? 'bad' : d.jackpot || d.wonBoss ? 'gold' : 'good'
+        return { kind: 'resolve', title: this.resolveCopy.title, sub: this.resolveCopy.sub, earned: d?.earned ?? 0, tone }
+      }
       case 'pause':
         return { kind: 'pause' }
       case 'runend':

@@ -10,8 +10,8 @@ export interface Cam {
 }
 
 export function machineScale(cssW: number, boardW: number): number {
-  const gutter = cssW < 1180 ? 36 : 220
-  const machinePx = Math.min(Math.max(280, cssW - gutter * 2), 860)
+  const gutter = cssW < 560 ? 6 : cssW < 1180 ? 36 : 220
+  const machinePx = Math.min(Math.max(260, cssW - gutter * 2), 860)
   return machinePx / boardW
 }
 
