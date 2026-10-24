@@ -2,6 +2,18 @@ export type ThemeName = 'workshop' | 'foundry' | 'gravity' | 'grinder'
 export type PegKind = 'normal' | 'reinforced' | 'gold' | 'moving' | 'vanish'
 export type BinKind = 'hazard' | 'coin' | 'bonus' | 'jackpot'
 export type LayoutId = 'workshop' | 'garden' | 'furnace' | 'elite' | 'ante' | 'core' | 'grinder'
+export type EncounterId = 'bellkeeper' | 'heartforge'
+
+export interface EncounterSpec {
+  id: EncounterId
+  name: string
+  description: string
+  required: number
+  /** Empty means each relay once, in any order. Otherwise these exact IDs. */
+  sequence: number[]
+  /** Flat gears: never scaled by multiplier, build economy, or Overdrive. */
+  bounty: number
+}
 
 export interface Motion {
   amp: number
@@ -25,6 +37,8 @@ export interface Bumper {
   y: number
   r: number
   core?: boolean
+  /** Guardian relay identity, independent of its index in the bumper array. */
+  relay?: number
 }
 
 export interface Wall {
@@ -73,6 +87,7 @@ export interface Board {
   features: string[]
   boss: boolean
   jackpot: boolean
+  encounter?: EncounterSpec
 }
 
 export function gapCenter(board: Board, gapT: number): number {

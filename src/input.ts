@@ -11,6 +11,10 @@ export class Input {
 
   constructor(private canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
+      // Editing seeds and activating focused buttons must not also control a fall.
+      const target = e.target as HTMLElement | null
+      if (e.code !== 'Escape' && target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+      if ((e.code === 'Enter' || e.code === 'Space') && target?.closest?.('button, a')) return
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault()
       if (e.repeat) return
       this.keys.add(e.code)
@@ -20,6 +24,7 @@ export class Input {
     window.addEventListener('blur', () => {
       this.keys.clear()
       this.pressed.clear()
+      this.downOnCanvas = false
     })
     canvas.addEventListener('pointermove', (e) => this.track(e))
     canvas.addEventListener('pointerdown', (e) => {
@@ -27,10 +32,10 @@ export class Input {
       this.downOnCanvas = true
     })
     window.addEventListener('pointerup', (e) => {
-      if (this.downOnCanvas) this.clicked = true
+      if (this.downOnCanvas) { this.clicked = true; this.track(e) }
       this.downOnCanvas = false
-      this.track(e)
     })
+    window.addEventListener('pointercancel', () => { this.downOnCanvas = false })
     canvas.addEventListener('contextmenu', (e) => e.preventDefault())
   }
 

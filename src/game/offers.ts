@@ -1,7 +1,7 @@
 import { RELICS, UPGRADES, type RelicDef, type UpgradeDef } from '../content/catalog'
 import { pickIndex, rngFor } from '../core/rng'
 import { hypotheticalSynergy } from '../sim/profile'
-import { STARTER_RELICS } from '../tuning'
+import { STARTER_RELICS, TUNING } from '../tuning'
 
 export interface Offer {
   kind: 'upgrade' | 'relic'
@@ -15,7 +15,7 @@ export interface Offer {
 
 export function availableRelicIds(researched: string[]): string[] {
   const extra = researched.filter((id) => RELICS[id])
-  return [...STARTER_RELICS, ...extra]
+  return [...new Set([...STARTER_RELICS, ...extra])]
 }
 
 function take<T extends { id: string; tags: string[] }>(
@@ -95,8 +95,8 @@ export function rollShop(
   const pickedU = take(rng, ups, rel.length ? 2 : 3, primary)
   const pickedR = rel.length ? take(rng, rel, 1, primary) : []
   return [
-    ...pickedU.map((u) => toOffer('upgrade', u, ballId, upgrades, relics, 22)),
-    ...pickedR.map((r) => toOffer('relic', r, ballId, upgrades, relics, 34)),
+    ...pickedU.map((u) => toOffer('upgrade', u, ballId, upgrades, relics, TUNING.shopUpgrade)),
+    ...pickedR.map((r) => toOffer('relic', r, ballId, upgrades, relics, TUNING.shopRelic)),
   ]
 }
 

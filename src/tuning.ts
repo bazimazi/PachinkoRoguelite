@@ -19,9 +19,9 @@ export const TUNING = {
   reinforcedPay: 4,
   goldPay: 6,
   jackpotAt: 3,
-  researchCost: 8,
-  shopUpgrade: 22,
-  shopRelic: 34,
+  researchCost: 12,
+  shopUpgrade: 45,
+  shopRelic: 75,
   shopReroll: 6,
   trailCost: 22,
   challengeShards: 6,
@@ -29,7 +29,7 @@ export const TUNING = {
   previewDt: 1 / 90,
 }
 
-export const RESEARCH_ORDER = ['gravity-lens', 'glass-heart', 'ouroboros', 'clockwork-feather'] as const
+export const RESEARCH_ORDER = ['gravity-lens', 'glass-heart', 'ouroboros', 'clockwork-feather', 'flywheel', 'portal-passport', 'clean-contract', 'salvage-crown'] as const
 
 export const STARTER_RELICS = [
   'spring-soul',
@@ -38,4 +38,8 @@ export const STARTER_RELICS = [
   'broken-compass',
   'heavy-crown',
   'echo-core',
+  'arc-coil',
+  'velvet-fuse',
+  'golden-rudder',
+  'brass-ledger',
 ] as const

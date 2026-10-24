@@ -11,7 +11,19 @@ export interface Cmd {
   special: boolean
   tilt: boolean
   aimX: number
+  /** A discrete press, shared by the E binding and the on-screen button. */
+  overdrive?: boolean
 }
+
+/** The reactor rewards exploring the machine, never rattling on one peg. */
+export const OVERDRIVE = {
+  pegsToCharge: 5,
+  duration: 3,
+  payout: 2,
+  lift: 620,
+  steer: 300,
+  maxUses: 2,
+} as const
 
 export interface SimEvent {
   type: string
@@ -36,6 +48,15 @@ export class Drop {
   mult = 1
   combo = 0
   comboTimer = 0
+  /** Normalized reactor charge, built by distinct physical peg contacts. */
+  charge = 0
+  overdriveTime = 0
+  overdriveUses = 0
+  encounterProgress = 0
+  encounterComplete = false
+  encounterReturns = 0
+  relayHits: boolean[] = []
+  lastRelay = -1
   nudges = 0
   maxNudges = 0
   specials = 0
@@ -49,6 +70,13 @@ export class Drop {
   hazardThis = 0
   shatters = 0
   portals = 0
+  shields = 0
+  arcPulses = 0
+  goldRefunds = 0
+  investments = 0
+  flywheelRewards = 0
+  cleanBonus = 0
+  salvageUsed = false
   golds = 0
   pegs = 0
   coreHits = 0
@@ -68,6 +96,9 @@ export class Drop {
   private anchorX = 0
   private anchorY = 0
   private anchorT = 0
+  private goldRefundT = 0
+  private lastEngine: 'spring' | 'bumper' | null = null
+  private bossProgressAt = 0
   compass = 0
   gilds = 0
   featherUsed = false
@@ -89,9 +120,11 @@ export class Drop {
   squashAng = 0
   hitstop = 0
   flashPeg = new Float32Array(0)
-  /** Cosmetic: pegs struck this drop stay lit until the drop settles, in strike order. */
+  /** Pegs touched or arced this drop stay lit, also feeding Clean Contract. */
   lit: boolean[] = []
   litOrder: number[] = []
+  /** Real peg contacts, kept separate from pegs lit by lightning. */
+  private struck: boolean[] = []
   bumperFlash = new Float32Array(0)
   vanish = new Float32Array(0)
   gone: boolean[] = []
@@ -103,6 +136,7 @@ export class Drop {
   events: SimEvent[] = []
   trail: { x: number; y: number }[] = []
   private trailAcc = 0
+  private relayCd = new Float32Array(0)
 
   constructor(board: Board, ballId: string, profile: Profile, integrity: number, integrityMax: number) {
     this.board = board
@@ -114,6 +148,7 @@ export class Drop {
     this.maxNudges = profile.maxNudges
     this.specials = profile.specialCharges
     this.tilts = profile.tiltCharges
+    this.shields = profile.hazardShields
     this.integrity = integrity
     this.integrityMax = integrityMax
     this.gapT = board.gapStart
@@ -126,7 +161,10 @@ export class Drop {
     this.gone = board.pegs.map(() => false)
     this.gilded = board.pegs.map(() => false)
     this.lit = board.pegs.map(() => false)
+    this.struck = board.pegs.map(() => false)
     this.bumperFlash = new Float32Array(board.bumpers.length)
+    this.relayCd = new Float32Array(board.bumpers.length)
+    this.relayHits = board.bumpers.filter(b => b.relay != null).map(() => false)
     this.springCd = board.zones.map(() => 0)
   }
 
@@ -155,10 +193,36 @@ export class Drop {
     return e
   }
 
+  get overdriveReady(): boolean {
+    return this.charge >= 1 && this.overdriveTime <= 0 && this.overdriveUses < OVERDRIVE.maxUses && this.launched && !this.captured && !this.dead
+  }
+
+  get encounterTargets(): number[] {
+    const encounter = this.board.encounter
+    if (!encounter || this.encounterComplete) return []
+    if (encounter.sequence.length) return [encounter.sequence[this.encounterProgress]]
+    return this.relayHits.map((hit, id) => hit ? -1 : id).filter(id => id >= 0)
+  }
+
+  get encounterTarget(): number | null {
+    return this.encounterTargets[0] ?? null
+  }
+
   step(dt: number, cmd: Cmd = EMPTY): void {
     if (!this.launched || this.captured || this.dead) return
     this.time += dt
-    if (this.comboTimer > 0) {
+    // Resolve the press before expiring combo time: a last-moment rescue should
+    // preserve the chain that was visible when the player pressed the button.
+    if (cmd.overdrive && this.overdriveReady) this.activateOverdrive(cmd.aimX)
+    const surgeProtectsCombo = this.overdriveTime > 0
+    if (this.overdriveTime > 0) {
+      this.overdriveTime = Math.max(0, this.overdriveTime - dt)
+      if (this.overdriveTime === 0) {
+        this.events.push({ type: 'overdrive-end', x: this.ball.x, y: this.ball.y, text: 'REACTOR COOLING' })
+        if (this.overdriveReady) this.events.push({ type: 'overdrive-ready', x: this.ball.x, y: this.ball.y, text: 'OVERDRIVE READY', big: true })
+      }
+    }
+    if (this.comboTimer > 0 && !surgeProtectsCombo) {
       this.comboTimer -= dt
       if (this.comboTimer <= 0) this.combo = 0
     }
@@ -167,6 +231,7 @@ export class Drop {
     if (this.invuln > 0) this.invuln -= dt
     if (this.portalCd > 0) this.portalCd -= dt
     if (this.coreCd > 0) this.coreCd -= dt
+    if (this.goldRefundT > 0) this.goldRefundT -= dt
     if (this.tiltT > 0) this.tiltT -= dt
     if (this.critT > 0) {
       this.critT -= dt
@@ -178,6 +243,7 @@ export class Drop {
     for (let i = 0; i < this.flashPeg.length; i++) if (this.flashPeg[i] > 0) this.flashPeg[i] -= dt * 3.2
     for (let i = 0; i < this.vanish.length; i++) if (this.vanish[i] > 0) this.vanish[i] -= dt
     for (let i = 0; i < this.bumperFlash.length; i++) if (this.bumperFlash[i] > 0) this.bumperFlash[i] -= dt * 4
+    for (let i = 0; i < this.relayCd.length; i++) if (this.relayCd[i] > 0) this.relayCd[i] -= dt
     for (let i = 0; i < this.springCd.length; i++) if (this.springCd[i] > 0) this.springCd[i] -= dt
 
     if (this.featherT > 0) {
@@ -201,6 +267,15 @@ export class Drop {
     this.echo(dt)
     this.antiStuck(dt)
     this.capture()
+    // A build can keep the ball aloft for a long time, but cannot farm forever.
+    // Boss progress resets its clock; a stalled life costs shell before returning.
+    if (!this.dead && !this.captured) {
+      if (this.board.boss && !this.wonBoss && this.time - this.bossProgressAt >= 25) {
+        this.bossMiss()
+      } else if (this.time >= 80 && (!this.board.boss || this.wonBoss)) {
+        this.finishCapture(this.binAt(this.ball.x))
+      }
+    }
     this.spin += this.ball.vx * dt * 0.015
     this.trailAcc += dt
     if (this.trailAcc > 0.016) {
@@ -219,6 +294,7 @@ export class Drop {
       this.nudgeCd = 0.32
       const kick = TUNING.nudgeSpeed * this.profile.nudgeScale * cmd.nudge
       this.ball.vx += kick
+      this.goldRefundT = this.profile.goldRefundWindow
       this.events.push({ type: 'nudge', x: this.ball.x, y: this.ball.y, text: cmd.nudge < 0 ? '◀' : '▶' })
     }
     if (cmd.flip && this.flips > 0 && this.board.shutterY != null) {
@@ -249,7 +325,7 @@ export class Drop {
         }
       }
     }
-    if (cmd.tilt && this.specialCd <= 0 && this.tilts > 0) {
+    if ((cmd.tilt || (cmd.special && this.profile.special === 'tilt')) && this.specialCd <= 0 && this.tilts > 0) {
       this.tilts -= 1
       this.specialCd = 0.4
       this.tiltT = this.profile.tiltDuration
@@ -261,6 +337,36 @@ export class Drop {
         text: this.tiltDir < 0 ? 'LEAN ◀' : 'LEAN ▶',
       })
     }
+  }
+
+  private activateOverdrive(aimX: number): void {
+    this.charge = 0
+    this.overdriveUses += 1
+    this.overdriveTime = OVERDRIVE.duration
+    // A deliberate rescue kick, rather than a passive shield. Aimed lift can
+    // bring the sphere back into a lucrative cluster or straight into danger.
+    // Height limits the added energy; the reactor cannot launch above the inlet.
+    const headroom = Math.max(0, this.ball.y - this.board.launchY - this.ball.r - 16)
+    const ceilingLift = Math.sqrt(2 * TUNING.gravity * this.profile.gravityScale * headroom)
+    this.ball.vy = Math.min(this.ball.vy, -Math.min(OVERDRIVE.lift, ceilingLift))
+    const target = Number.isFinite(aimX) ? aimX : this.ball.x
+    this.ball.vx += clamp((target - this.ball.x) / 150, -1, 1) * OVERDRIVE.steer
+    this.clampSpeed()
+    this.squash = Math.max(this.squash, 0.36)
+    this.events.push({ type: 'overdrive-start', x: this.ball.x, y: this.ball.y, text: 'OVERDRIVE', big: true })
+  }
+
+  private chargeReactor(x: number, y: number): void {
+    if (this.overdriveUses >= OVERDRIVE.maxUses || this.charge >= 1) return
+    this.charge = Math.min(1, this.charge + 1 / OVERDRIVE.pegsToCharge)
+    this.events.push({ type: 'overdrive-charge', x, y })
+    if (this.overdriveReady) this.events.push({ type: 'overdrive-ready', x, y, text: 'OVERDRIVE READY', big: true })
+  }
+
+  private endOverdrive(): void {
+    if (this.overdriveTime <= 0) return
+    this.overdriveTime = 0
+    this.events.push({ type: 'overdrive-end', x: this.ball.x, y: this.ball.y, text: 'REACTOR COOLING' })
   }
 
   private findCrit(): number {
@@ -426,6 +532,9 @@ export class Drop {
     for (let bi = 0; bi < this.board.bumpers.length; bi++) {
       const b = this.board.bumpers[bi]
       if (b.core && this.coreOpen) continue
+      // Bellkeeper targets physically withdraw once linked. The open ring is a
+      // new route through the field, rather than another surface to farm.
+      if (b.relay != null && this.board.encounter?.id === 'bellkeeper' && this.relayHits[b.relay]) continue
       const dx = ball.x - b.x
       const dy = ball.y - b.y
       const d = Math.hypot(dx, dy) || 1
@@ -438,6 +547,7 @@ export class Drop {
         if (vn < -40 && this.coreCd <= 0 && !this.wonBoss) {
           this.coreCd = 0.48
           this.coreHits += 1
+          this.bossProgressAt = this.time
           this.bumperFlash[bi] = 1
           this.events.push({
             type: 'core',
@@ -475,7 +585,30 @@ export class Drop {
       this.squash = 0.4
       this.bumperFlash[bi] = 1
       this.onBumper(b.x, b.y, nx, ny)
+      if (b.relay != null && vn < -40 && this.relayCd[bi] <= 0) {
+        this.relayCd[bi] = 0.3
+        this.onRelay(b.relay, b.x, b.y)
+      }
     }
+  }
+
+  private onRelay(id: number, x: number, y: number): void {
+    const encounter = this.board.encounter
+    if (!encounter || this.encounterComplete) return
+    if (!this.encounterTargets.includes(id)) {
+      this.events.push({ type: 'relay-block', x, y, text: `NEXT: ${this.encounterTarget === 0 ? 'I' : 'II'}` })
+      return
+    }
+    this.relayHits[id] = true
+    this.lastRelay = id
+    this.encounterProgress += 1
+    this.events.push({ type: 'relay-hit', x, y, text: `${this.encounterProgress}/${encounter.required} LINKED`, big: false })
+    if (this.encounterProgress < encounter.required) return
+    this.encounterComplete = true
+    // This is a once-only guardian bounty, not a physical collision payout.
+    // Neither rich boards, economy engines nor Overdrive multiply the award.
+    this.earned += encounter.bounty
+    this.events.push({ type: 'encounter-clear', x, y, text: `${encounter.name.toUpperCase()} LINKED`, gears: encounter.bounty, big: true })
   }
 
   private noteBounce(before: number, impact: number): void {
@@ -506,6 +639,9 @@ export class Drop {
       this.flashPeg[i] = Math.max(this.flashPeg[i], 0.5)
       return
     }
+    const firstStrike = !this.struck[i]
+    this.struck[i] = true
+    if (firstStrike) this.chargeReactor(x, y)
     if (this.profile.gildMax && !this.gilded[i] && peg.kind !== 'gold' && this.gilds < this.profile.gildMax) {
       const rowTaken = this.gildedRow(peg.row)
       if (!rowTaken) {
@@ -525,6 +661,11 @@ export class Drop {
       this.golds += 1
       if (this.flipped) this.goldAfterFlip = true
       this.addMult(0.28 * (gold && peg.kind !== 'gold' ? this.profile.gildMult / 0.28 : 1))
+      if (firstStrike && this.goldRefundT > 0 && this.goldRefunds < RELICS['golden-rudder'].params.max && this.nudges < this.maxNudges) {
+        this.goldRefundT = 0
+        this.goldRefunds += 1
+        this.refundNudge(x, y, 'GOLD +NUDGE')
+      }
     }
     if (this.critPeg === i && this.critT > 0) {
       this.critPeg = -1
@@ -540,11 +681,24 @@ export class Drop {
     if (canShatter && this.shatters < 14) {
       this.gone[i] = true
       this.shatters += 1
-      this.pay(x, y, this.profile.gearScale * 8, 'shatter', true)
+      this.pay(x, y, RELICS['heavy-crown'].params.bonus, 'shatter', true, true)
+      if (this.profile.salvage && !this.salvageUsed && this.shatters >= RELICS['salvage-crown'].params.shatters) {
+        this.salvageUsed = true
+        const before = this.integrity
+        this.integrity = Math.min(this.integrityMax, this.integrity + RELICS['salvage-crown'].params.shell)
+        this.addMult(RELICS['salvage-crown'].params.mult)
+        this.events.push({ type: 'special', x, y, text: this.integrity > before ? 'SALVAGED +1 SHELL' : 'SALVAGED', big: true })
+      }
     }
     const base = gold ? TUNING.goldPay : peg.kind === 'reinforced' ? TUNING.reinforcedPay : TUNING.pegPay
     this.bumpCombo()
-    this.pay(x, y, base, gold ? 'gold' : 'peg', gold)
+    this.pay(x, y, base, gold ? 'gold' : 'peg', gold, true)
+    if (this.profile.ledger && firstStrike && this.investments < RELICS['brass-ledger'].params.max && this.earned >= RELICS['brass-ledger'].params.cost) {
+      this.investments += 1
+      this.earned -= RELICS['brass-ledger'].params.cost
+      this.addMult(RELICS['brass-ledger'].params.mult)
+      this.events.push({ type: 'special', x, y, gears: -RELICS['brass-ledger'].params.cost, text: 'INVEST −2', big: false })
+    }
     this.maybeFeather()
   }
 
@@ -557,8 +711,9 @@ export class Drop {
 
   private onBumper(x: number, y: number, nx: number, ny: number): void {
     this.bumpCombo()
+    this.engine('bumper', x, y)
     const bonus = this.profile.bumperGears
-    this.pay(x, y, 2 + bonus, 'bumper', false)
+    this.pay(x, y, 2 + bonus, 'bumper', false, true)
     this.events.push({ type: 'bumper', x, y })
     if (this.profile.echo) {
       this.echoArmed = true
@@ -590,6 +745,56 @@ export class Drop {
     else this.combo = 1
     this.comboTimer = this.profile.comboWindow
     this.events.push({ type: 'combo', x: this.ball.x, y: this.ball.y, combo: this.combo })
+    if (this.profile.arcEvery && this.combo % this.profile.arcEvery === 0) this.arc()
+  }
+
+  private refundNudge(x: number, y: number, text = '+NUDGE'): void {
+    if (this.nudges >= this.maxNudges) return
+    this.nudges += 1
+    this.events.push({ type: 'refund', x, y, text })
+  }
+
+  private engine(kind: 'spring' | 'bumper', x: number, y: number): void {
+    if (!this.profile.flywheel) return
+    if (this.lastEngine && this.lastEngine !== kind && this.flywheelRewards < RELICS.flywheel.params.max) {
+      this.flywheelRewards += 1
+      this.addMult(RELICS.flywheel.params.mult)
+      this.refundNudge(x, y, 'FLYWHEEL +NUDGE')
+      this.events.push({ type: 'echo', x, y, text: 'FLYWHEEL', big: true })
+    }
+    this.lastEngine = kind
+  }
+
+  private arc(): void {
+    const spec = RELICS['arc-coil'].params
+    if (this.arcPulses >= spec.max) return
+    const { x, y } = this.ball
+    const targets: { i: number; x: number; y: number; d: number }[] = []
+    for (let i = 0; i < this.board.pegs.length; i++) {
+      if (this.lit[i] || !this.solid(i)) continue
+      const p = this.pose(i)
+      const d = Math.hypot(p.x - x, p.y - y)
+      if (d <= spec.radius) targets.push({ i, x: p.x, y: p.y, d })
+    }
+    targets.sort((a, b) => a.d - b.d || a.i - b.i)
+    if (!targets.length) return
+    this.arcPulses += 1
+    this.events.push({ type: 'crit', x, y, text: 'CHAIN LIGHTNING', big: true })
+    for (const p of targets.slice(0, spec.targets)) {
+      this.lit[p.i] = true
+      this.litOrder.push(p.i)
+      this.flashPeg[p.i] = 1
+      // Lightning pays a flat base. It never calls onPeg, chains itself, grants
+      // gold multiplier, shatters, or masquerades as a precise physical strike.
+      this.pay(p.x, p.y, spec.pay, 'gold', false)
+    }
+  }
+
+  private consumeShield(x: number, y: number): boolean {
+    if (this.shields <= 0) return false
+    this.shields -= 1
+    this.events.push({ type: 'special', x, y, text: 'VELVET SHIELD', big: true })
+    return true
   }
 
   private addMult(amount: number): void {
@@ -598,9 +803,11 @@ export class Drop {
     this.events.push({ type: 'mult', x: this.ball.x, y: this.ball.y, mult: this.mult, text: `+${gain.toFixed(2)}` })
   }
 
-  private pay(x: number, y: number, base: number, type: string, big: boolean): void {
+  private pay(x: number, y: number, base: number, type: string, big: boolean, physical = false): void {
     const comboMult = 1 + Math.max(0, this.combo - 1) * TUNING.comboStep
-    const gears = Math.max(1, Math.round(base * comboMult * this.mult * this.profile.gearScale * this.board.payout))
+    const bonus = this.profile.comboBonusAt && this.combo >= this.profile.comboBonusAt ? this.profile.comboBonusScale : 1
+    const surge = physical && this.overdriveTime > 0 ? OVERDRIVE.payout : 1
+    const gears = Math.max(1, Math.round(base * comboMult * bonus * this.mult * this.profile.gearScale * this.board.payout * surge))
     this.earned += gears
     this.events.push({ type, x, y, gears, text: `+${gears}`, big, combo: this.combo })
   }
@@ -622,16 +829,19 @@ export class Drop {
       if (z.kind === 'spike') {
         const d = Math.hypot(ball.x - z.x, ball.y - z.y)
         if (d < ball.r + z.r * 0.72 && this.invuln <= 0 && !this.dead) {
-          this.invuln = 0.85
-          this.hazardThis += 1
-          this.combo = 0
-          this.comboTimer = 0
-          this.integrity -= 1
+          this.invuln = this.profile.hazardGrace
+          const shielded = this.consumeShield(z.x, z.y)
+          if (!shielded) {
+            this.hazardThis += 1
+            this.combo = 0
+            this.comboTimer = 0
+            this.integrity -= 1
+          }
           const nx = (ball.x - z.x) / (d || 1)
           const ny = (ball.y - z.y) / (d || 1)
           ball.vx += nx * 280
           ball.vy += ny * 220 - 40
-          this.events.push({ type: 'hazard', x: z.x, y: z.y, text: 'SHELL −1', big: true })
+          if (!shielded) this.events.push({ type: 'hazard', x: z.x, y: z.y, text: 'SHELL −1', big: true })
           if (this.integrity <= 0) this.shatter()
         }
       } else if (z.kind === 'spring' && this.springCd[zi] <= 0) {
@@ -641,7 +851,9 @@ export class Drop {
           ball.vy = -Math.max(TUNING.springKick, Math.abs(ball.vy))
           ball.vx += (ball.x - z.x) * 2
           this.bumpCombo()
-          this.pay(z.x, z.y, 2, 'spring', false)
+          this.engine('spring', z.x, z.y)
+          this.pay(z.x, z.y, 2, 'spring', false, true)
+          this.maybeFeather()
         }
       } else if (z.kind === 'portal' && this.portalCd <= 0) {
         const d = Math.hypot(ball.x - z.x, ball.y - z.y)
@@ -658,7 +870,12 @@ export class Drop {
               ball.vx *= speed
               ball.vy *= speed
               this.addMult(RELICS.ouroboros.params.mult)
-              if ((this.profile.tags.portal ?? 0) >= 2) this.addMult(0.15)
+              if ((this.profile.tags.portal ?? 0) >= 2) this.addMult((this.profile.tags.portal ?? 0) >= 3 ? 0.30 : 0.15)
+            }
+            if (this.profile.passport && this.portals <= RELICS['portal-passport'].params.max) {
+              this.pay(other.x, other.y, RELICS['portal-passport'].params.pay, 'gold', true)
+              this.refundNudge(other.x, other.y, 'PASSPORT +NUDGE')
+              if (this.combo > 0) this.comboTimer = this.profile.comboWindow
             }
             this.events.push({ type: 'portal', x: other.x, y: other.y, text: 'PORTAL' })
           }
@@ -669,6 +886,7 @@ export class Drop {
 
   private shatter(): void {
     this.dead = true
+    this.endOverdrive()
     this.events.push({ type: 'shatter-ball', x: this.ball.x, y: this.ball.y, text: 'SHELL BROKEN', big: true })
   }
 
@@ -778,16 +996,18 @@ export class Drop {
     const x = this.ball.x
     const y = this.ball.y
     if (this.board.boss && !this.wonBoss) {
-      this.captured = 'hazard'
-      this.hazardThis += 1
-      this.dead = true
-      this.events.push({ type: 'pocket', x, y, text: 'THE GRINDER KEEPS YOU', gears: 0 })
-      this.ball.vx = 0
-      this.ball.vy = 0
+      this.bossMiss()
       return
     }
-    const resolved = kind
+    // One clearly advertised second approach. Test the original pocket before
+    // consuming shields: a hazardous gutter never becomes a free safe return.
+    if (this.board.encounter && !this.encounterComplete && this.encounterReturns === 0 && kind !== 'hazard' && this.time < 75 && this.integrity > 0) {
+      this.recirculate()
+      return
+    }
+    const resolved = kind === 'hazard' && this.consumeShield(x, y) ? 'coin' : kind
     this.captured = resolved
+    this.endOverdrive()
     if (resolved === 'hazard') {
       this.hazardThis += 1
       this.integrity -= 1
@@ -815,8 +1035,67 @@ export class Drop {
         big: true,
       })
     }
+    if (resolved !== 'hazard') {
+      let bonus = this.profile.landingBonus
+      if (this.profile.cleanContract && this.hazardThis === 0) {
+        const spec = RELICS['clean-contract'].params
+        this.cleanBonus = Math.round(Math.min(spec.max, this.litOrder.length * spec.perPeg) * this.board.payout)
+        this.earned += this.cleanBonus
+        if (this.cleanBonus > 0) this.events.push({ type: 'gold', x, y, gears: this.cleanBonus, text: `CLEAN +${this.cleanBonus}`, big: true })
+      }
+      bonus = Math.round(bonus * this.board.payout)
+      if (bonus > 0) {
+        this.earned += bonus
+        this.events.push({ type: 'gold', x, y, gears: bonus, text: `LANDING +${bonus}`, big: false })
+      }
+    }
     this.ball.vx = 0
     this.ball.vy = 0
+  }
+
+  private recirculate(): void {
+    this.encounterReturns += 1
+    const next = this.board.bumpers.find(b => b.relay === this.encounterTarget)
+    const angle = next ? Math.atan2(next.x - this.board.launchX, next.y - this.board.launchY) : 0
+    const pose = launchPose(this.board, angle, this.profile, this.ballDef.launch)
+    Object.assign(this.ball, pose)
+    this.anchorX = this.ball.x
+    this.anchorY = this.ball.y
+    this.anchorT = 0
+    this.stuck = 0
+    this.trail = []
+    this.events.push({ type: 'recirculate', x: this.ball.x, y: this.ball.y, text: 'RECIRCULATE · FINAL PASS', big: true })
+  }
+
+  private bossMiss(): void {
+    if (this.captured || this.dead || this.wonBoss) return
+    this.integrity = Math.max(0, this.integrity - 1)
+    this.hazardThis += 1
+    this.combo = 0
+    this.comboTimer = 0
+    this.bossProgressAt = this.time
+    this.coreCd = 0
+    this.goldRefundT = 0
+    if (this.integrity <= 0) {
+      this.captured = 'hazard'
+      this.dead = true
+      this.endOverdrive()
+      this.ball.vx = 0
+      this.ball.vy = 0
+      this.events.push({ type: 'pocket', x: this.ball.x, y: this.ball.y, text: 'THE GRINDER KEEPS YOU', gears: 0 })
+      return
+    }
+    const core = this.board.bumpers.find((b) => b.core)
+    this.ball.x = core?.x ?? this.board.w / 2
+    this.ball.y = (core?.y ?? this.board.h * 0.45) - 180
+    this.ball.vx = 0
+    this.ball.vy = 180
+    this.invuln = Math.max(this.invuln, this.profile.hazardGrace)
+    this.anchorX = this.ball.x
+    this.anchorY = this.ball.y
+    this.anchorT = 0
+    this.stuck = 0
+    this.events.push({ type: 'hazard', x: this.ball.x, y: this.ball.y, text: 'SECOND CHANCE · SHELL −1', big: true })
   }
 }
 

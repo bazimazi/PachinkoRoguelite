@@ -174,6 +174,51 @@ export class Sfx {
     this.noise(0.1, 0.1, 150)
   }
 
+  /** Readiness is a small musical invitation; activation is a warm, rising reactor chord. */
+  overdrive(ready = false): void {
+    if (ready) {
+      this.bell(659, .22, .075)
+      this.bell(988, .3, .06, .07)
+      this.bell(1318, .34, .04, .14)
+      return
+    }
+    this.noise(.32, .07, 1200)
+    this.tone(82, .48, 'sine', .12, 82)
+    this.tone(164, .38, 'triangle', .065, 164, .025)
+    ;[330, 494, 659, 988].forEach((f, i) => this.bell(f, .42, .055, .035 + i * .045))
+  }
+
+  /** A stable pitch identifies each bell; forge hits answer with alternating machinery. */
+  relay(kind: 'bellkeeper' | 'heartforge', index: number): void {
+    const i = Math.max(0, Math.min(2, Math.floor(index)))
+    if (kind === 'bellkeeper') {
+      const frequency = [523.25, 659.25, 783.99][i]
+      this.bell(frequency, .46, .095)
+      this.tone(frequency * 1.5, .2, 'sine', .024, 0, .025)
+      return
+    }
+    const frequency = i % 2 ? 196 : 146.83
+    this.noise(.075, .055, 550)
+    this.tone(frequency, .19, 'triangle', .085, frequency * .2)
+    this.bell(frequency * 4, .22, .045, .025)
+  }
+
+  /** Wrong-order contact gets a quiet directional cue rather than a damage sound. */
+  relayBlocked(): void {
+    this.tone(294, .07, 'sine', .035)
+    this.tone(392, .1, 'sine', .03, 0, .055)
+  }
+
+  guardianClear(): void {
+    ;[523.25, 659.25, 783.99].forEach((f, i) => this.bell(f, .44, .07, i * .055))
+    this.bell(1046.5, .55, .055, .2)
+  }
+
+  recirculate(): void {
+    this.tone(196, .2, 'sine', .055, 196)
+    this.bell(587.33, .22, .04, .1)
+  }
+
   ui(): void {
     this.tone(640, 0.05, 'sine', 0.05)
     this.tone(960, 0.04, 'sine', 0.025, 0, 0.025)

@@ -1,19 +1,28 @@
 {
   "name": "plumb",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "verify:visuals": "tsx scripts/verify-visuals.ts"
+    "verify:visuals": "tsx scripts/verify-visuals.ts",
+    "verify:builds": "tsx scripts/verify-builds.ts",
+    "verify:routes": "tsx scripts/verify-routes.ts",
+    "verify:expeditions": "tsx scripts/verify-expeditions.ts",
+    "test": "npm run verify:builds && npm run verify:momentum && npm run verify:encounters && npm run verify:routes && npm run verify:expeditions",
+    "verify:momentum": "tsx scripts/verify-momentum.ts",
+    "verify:browser": "playwright test",
+    "verify:encounters": "tsx scripts/verify-encounters.ts"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.0.9",
+    "@playwright/test": "^1.64.1",
+    "happy-dom": "^21.0.4",
     "tsx": "^4.23.15",
     "typescript": "^5.7.3",
-    "vite": "^6.2.0"
+    "vite": "^6.4.5"
   }
 }

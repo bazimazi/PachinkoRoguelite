@@ -44,23 +44,35 @@ export interface Profile {
   specialCharges: number
   previewSteps: number
   gateCombo: number
+  arcEvery: number
+  hazardShields: number
+  hazardGrace: number
+  goldRefundWindow: number
+  ledger: boolean
+  flywheel: boolean
+  passport: boolean
+  cleanContract: boolean
+  salvage: boolean
+  comboBonusAt: number
+  comboBonusScale: number
+  landingBonus: number
   tags: Partial<Record<Tag, number>>
   synergies: Synergy[]
 }
 
 const BLURB: Record<Tag, [string, string]> = {
-  bounce: ['Hits keep the combo awake a little longer.', 'Rebounds sharpen. The board starts to sing.'],
-  multiplier: ['Gold pays a little more attention to you.', 'Multipliers compound. Greed is the plan.'],
-  gravity: ['Wells reach a little farther.', 'The fall bends. Wells and tilts are the line.'],
-  control: ['Nudges come a little easier.', 'You are steering, not hoping.'],
-  economy: ['The machine sheds a few more gears.', 'Every glint is worth more.'],
+  bounce: ['Combo window +0.08 seconds.', 'Combo window +0.08 seconds; impact restitution +0.04.'],
+  multiplier: ['Multiplier gains +10%.', 'Multiplier gains +22%.'],
+  gravity: ['Gravity well influence +18%.', 'Gravity well influence +35%.'],
+  control: ['Nudge force +8%.', 'Nudge force +8%; one extra nudge each drop.'],
+  economy: ['Peg, spring, and bumper payouts +8%.', 'Peg, spring, and bumper payouts +16%.'],
   risk: ['The shell is part of the math.', 'Danger is the multiplier.'],
-  portal: ['Portals leave a small wake.', 'A loop through the pair is a scoring engine.'],
-  destruction: ['Fast impacts worry the pegs.', 'Lanes open when you hit hard enough.'],
-  combo: ['The chain is a little more patient.', 'Long chains are the point of the drop.'],
+  portal: ['Ouroboros gains an extra +0.15 multiplier per transit.', 'Ouroboros gains an extra +0.30 multiplier per transit.'],
+  destruction: ['Shatter speed threshold −70, when a relic enables shattering.', 'Shatter speed threshold −120, when a relic enables shattering.'],
+  combo: ['Combo window +0.10 seconds.', 'Combo window +0.18 seconds.'],
   precision: ['The first second of the fall is clearer.', 'Aim and marks reward a committed line.'],
   luck: ['Rows remember their first kiss.', 'The first peg in a row can turn to gold.'],
-  magnet: ['Gold tugs a little harder.', 'You can bend toward value.'],
+  magnet: ['Golden Magnet: pull +110, reach +40.', 'Golden Magnet: pull +170, reach +65.'],
 }
 
 function bump(tags: Partial<Record<Tag, number>>, list: Tag[], n = 1) {
@@ -73,12 +85,16 @@ export function computeProfile(ballId: string, upgrades: string[], relics: strin
   const rel = new Set(relics)
   const tags: Partial<Record<Tag, number>> = {}
   bump(tags, ball.tags)
-  for (const id of upgrades) bump(tags, UPGRADES[id]?.tags ?? [])
-  for (const id of relics) bump(tags, RELICS[id]?.tags ?? [])
+  for (const id of up) bump(tags, UPGRADES[id]?.tags ?? [])
+  for (const id of rel) bump(tags, RELICS[id]?.tags ?? [])
 
   const synergies: Synergy[] = []
   for (const [tag, count] of Object.entries(tags) as [Tag, number][]) {
     if (count < 2) continue
+    // Theme tags remain useful for drafting, but are not advertised as passive bonuses.
+    if (['risk', 'precision', 'luck'].includes(tag)) continue
+    if (tag === 'portal' && !rel.has('ouroboros')) continue
+    if (tag === 'magnet' && !rel.has('golden-magnet')) continue
     const tier = count >= 3 ? 'forged' : 'emerging'
     const pair = BLURB[tag]
     synergies.push({
@@ -98,7 +114,10 @@ export function computeProfile(ballId: string, upgrades: string[], relics: strin
     ball.integrity + (up.has('spare-shell') ? 1 : 0) - (glass ? 1 : 0),
   )
 
-  let shatterSpeed = rel.has('heavy-crown') ? RELICS['heavy-crown'].params.speed : Infinity
+  let shatterSpeed = Math.min(
+    rel.has('heavy-crown') ? RELICS['heavy-crown'].params.speed : Infinity,
+    rel.has('salvage-crown') ? RELICS['salvage-crown'].params.speed : Infinity,
+  )
   if (Number.isFinite(shatterSpeed) && count('destruction') >= 2) shatterSpeed -= 70
   if (Number.isFinite(shatterSpeed) && count('destruction') >= 3) shatterSpeed -= 50
 
@@ -107,13 +126,14 @@ export function computeProfile(ballId: string, upgrades: string[], relics: strin
   let magnetPull = magnet ? RELICS['golden-magnet'].params.pull : 0
   let magnetRadius = magnet ? RELICS['golden-magnet'].params.radius : 0
   if (magnetPull > 0 && count('magnet') >= 2) {
-    magnetPull += 110
-    magnetRadius += 40
+    magnetPull += count('magnet') >= 3 ? 170 : 110
+    magnetRadius += count('magnet') >= 3 ? 65 : 40
   }
 
   const special = ball.special
+  const extraCharges = up.has('capacitor') ? UPGRADES.capacitor.params.charges : 0
   const tiltCharges =
-    (special === 'tilt' ? ball.charges : 0) + (up.has('plumb-line') ? 1 : 0)
+    (special === 'tilt' ? ball.charges + extraCharges : 0) + (up.has('plumb-line') ? 1 : 0)
 
   return {
     restitution:
@@ -125,7 +145,7 @@ export function computeProfile(ballId: string, upgrades: string[], relics: strin
     radius: ball.radius,
     nudgeScale: ball.nudge * (count('control') >= 2 ? 1.08 : 1),
     launch: ball.launch,
-    wellScale: ball.well * (lens ? RELICS['gravity-lens'].params.wells : 1) * (count('gravity') >= 2 ? 1.18 : 1),
+    wellScale: ball.well * (lens ? RELICS['gravity-lens'].params.wells : 1) * (count('gravity') >= 3 ? 1.35 : count('gravity') >= 2 ? 1.18 : 1),
     gravityScale: 1,
     comboWindow:
       TUNING.comboWindow +
@@ -158,9 +178,21 @@ export function computeProfile(ballId: string, upgrades: string[], relics: strin
     tiltCharges,
     tiltDuration: (lens ? RELICS['gravity-lens'].params.tilt : 1) * 1.05,
     special,
-    specialCharges: special === 'tilt' ? 0 : ball.charges,
+    specialCharges: special === 'tilt' ? 0 : ball.charges + extraCharges,
     previewSteps: TUNING.previewSteps + (up.has('afterimage') ? UPGRADES.afterimage.params.steps : 0),
     gateCombo: up.has('gate-memory') ? UPGRADES['gate-memory'].params.combo : 0,
+    arcEvery: rel.has('arc-coil') ? RELICS['arc-coil'].params.every : 0,
+    hazardShields: rel.has('velvet-fuse') ? RELICS['velvet-fuse'].params.shields : 0,
+    hazardGrace: up.has('shock-absorber') ? UPGRADES['shock-absorber'].params.grace : 0.85,
+    goldRefundWindow: rel.has('golden-rudder') ? RELICS['golden-rudder'].params.window : 0,
+    ledger: rel.has('brass-ledger'),
+    flywheel: rel.has('flywheel'),
+    passport: rel.has('portal-passport'),
+    cleanContract: rel.has('clean-contract'),
+    salvage: rel.has('salvage-crown'),
+    comboBonusAt: up.has('compound-interest') ? UPGRADES['compound-interest'].params.combo : 0,
+    comboBonusScale: up.has('compound-interest') ? UPGRADES['compound-interest'].params.scale : 1,
+    landingBonus: up.has('landing-gear') ? UPGRADES['landing-gear'].params.pay : 0,
     tags,
     synergies,
   }

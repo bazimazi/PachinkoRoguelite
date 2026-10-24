@@ -1,9 +1,10 @@
 import { PALETTE, type Palette } from './palette'
 import type { Cam } from './camera'
-import { gapCenter, pegPose, shutterWalls, type Bin, type Board } from '../sim/board'
+import { gapCenter, pegPose, shutterWalls, type Bin, type Board, type Bumper } from '../sim/board'
 import type { Drop } from '../sim/drop'
 import { drawAstrolabe, drawAtmosphere, drawEngraving } from './atmosphere'
 import type { BallDef } from '../content/catalog'
+import { drawReactor } from './machinery'
 
 export interface Particle {
   x: number
@@ -26,6 +27,8 @@ export interface Floater {
   max: number
   color: string
   size?: number
+  /** High-value feedback may replace nearby ordinary income labels. */
+  priority?: boolean
 }
 
 /** An expanding shockwave circle. */
@@ -107,7 +110,14 @@ function pegSprite(pal: Palette, kind: PegLook, lit: boolean): HTMLCanvasElement
     body.addColorStop(1, pal.pegDeep)
   }
   g.beginPath()
-  g.arc(cx, cy, r, 0, Math.PI * 2)
+  if (kind === 'reinforced') {
+    for (let i = 0; i < 6; i++) {
+      const a = i * Math.PI / 3 + Math.PI / 6
+      const x = cx + Math.cos(a) * (r + 1), y = cy + Math.sin(a) * (r + 1)
+      if (!i) g.moveTo(x, y); else g.lineTo(x, y)
+    }
+    g.closePath()
+  } else g.arc(cx, cy, r, 0, Math.PI * 2)
   g.fillStyle = body
   g.fill()
   g.beginPath()
@@ -120,17 +130,24 @@ function pegSprite(pal: Palette, kind: PegLook, lit: boolean): HTMLCanvasElement
     g.lineWidth = 1.6
     g.beginPath()
     for (let i = 0; i < 4; i++) {
-      const a = (Math.PI / 2) * i + Math.PI / 4
-      g.moveTo(cx, cy)
-      g.lineTo(cx + Math.cos(a) * 8, cy + Math.sin(a) * 8)
+      const a = (Math.PI / 2) * i
+      const x = cx + Math.cos(a) * 9, y = cy + Math.sin(a) * 9
+      if (!i) g.moveTo(x, y); else g.lineTo(x, y)
     }
+    g.closePath(); g.fillStyle = lit ? '#fff6d8' : '#805716'; g.fill()
     g.stroke()
+    g.beginPath(); g.arc(cx, cy, 12.5, 0, Math.PI * 2)
+    g.strokeStyle = '#fff0b380'; g.lineWidth = 1; g.stroke()
   } else if (kind === 'reinforced') {
     g.strokeStyle = 'rgba(40,48,56,0.7)'
     g.lineWidth = 2
     g.beginPath()
-    g.arc(cx, cy, 8, 0, Math.PI * 2)
+    g.roundRect(cx - 7, cy - 7, 14, 14, 3)
     g.stroke()
+    for (const x of [-1, 1]) for (const y of [-1, 1]) {
+      g.beginPath(); g.arc(cx + x * 11, cy + y * 11, 1.2, 0, Math.PI * 2)
+      g.fillStyle = '#263542'; g.fill()
+    }
   }
   g.fillStyle = 'rgba(255,255,255,0.6)'
   g.beginPath()
@@ -204,6 +221,29 @@ function drawCabinet(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
   const y = 18
   const w = board.w - 72
   const h = board.h - 28
+  // A layered metal chassis gives every board a recognizable physical silhouette.
+  for (const side of [-1, 1]) {
+    ctx.save()
+    ctx.translate(side < 0 ? x : x + w, 0)
+    ctx.scale(side, 1)
+    const metal = ctx.createLinearGradient(0, 0, 29, 0)
+    metal.addColorStop(0, pal.frameDeep)
+    metal.addColorStop(.35, mix(pal.frame, '#000000', .25))
+    metal.addColorStop(.7, pal.frameDeep)
+    metal.addColorStop(1, '#050b12')
+    for (let yy = 140; yy < board.floorY - 80; yy += 230) {
+      ctx.beginPath(); ctx.moveTo(-4, yy - 35); ctx.lineTo(19, yy - 12)
+      ctx.lineTo(26, yy + 20); ctx.lineTo(26, yy + 105)
+      ctx.lineTo(14, yy + 130); ctx.lineTo(-4, yy + 148); ctx.closePath()
+      ctx.fillStyle = metal; ctx.fill()
+      ctx.strokeStyle = pal.frame + '70'; ctx.lineWidth = 1; ctx.stroke()
+      for (let k = 0; k < 5; k++) {
+        ctx.fillStyle = '#030a10'; ctx.fillRect(8, yy + 23 + k * 13, 12, 5)
+        ctx.fillStyle = pal.accent + '50'; ctx.fillRect(9, yy + 23 + k * 13, 3, 2)
+      }
+    }
+    ctx.restore()
+  }
   ctx.save()
   ctx.shadowColor = 'rgba(0,0,0,0.6)'
   ctx.shadowBlur = 50
@@ -269,10 +309,20 @@ function drawCabinet(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
       ctx.fill()
     }
   }
+  // Narrow glass highlights are attached to the cabinet, never the moving ball.
+  ctx.save()
+  roundRect(ctx, x + 9, y + 9, w - 18, h - 18, 22); ctx.clip()
+  const glass = ctx.createLinearGradient(x, 0, x + w, 0)
+  glass.addColorStop(0, '#ffffff00'); glass.addColorStop(.065, '#c5eeff09')
+  glass.addColorStop(.17, '#ffffff00'); glass.addColorStop(.84, '#ffffff00')
+  glass.addColorStop(.91, '#ffffff06'); glass.addColorStop(1, '#ffffff00')
+  ctx.fillStyle = glass; ctx.fillRect(x, y, w, h)
+  ctx.restore()
 }
 
 function drawBoard(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, input: DrawInput) {
   drawCabinet(ctx, board, drop, pal, input.time)
+  drawReactor(ctx, board, drop, pal, input.time)
   drawChute(ctx, board, pal)
   drawBins(ctx, board, drop, pal, input)
   drawZones(ctx, board, pal, input.time)
@@ -328,8 +378,33 @@ function drawBoard(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal:
   ctx.globalAlpha = 1
   ctx.globalCompositeOperation = 'source-over'
 
-  drawBall(ctx, drop, input.trailColor, input.time)
+  drawBall(ctx, drop, input.trailColor, input.time, input.particlesOn)
+  drawChainReadout(ctx, drop, pal)
   drawFloaters(ctx, input.floaters)
+}
+
+function drawChainReadout(ctx: CanvasRenderingContext2D, drop: Drop, pal: Palette) {
+  if (drop.combo < 3 || drop.captured || drop.dead) return
+  const b = drop.ball
+  // One stable, offset readout replaces competing tiny numbers around the sphere.
+  const side = b.x > drop.board.w * .65 ? -1 : 1
+  const x = b.x + side * 42
+  ctx.save()
+  ctx.textAlign = side > 0 ? 'left' : 'right'
+  ctx.textBaseline = 'middle'
+  ctx.font = '800 21px Outfit, sans-serif'
+  ctx.strokeStyle = '#03090ff0'; ctx.lineWidth = 5
+  const label = `${drop.combo} CHAIN`
+  ctx.strokeText(label, x, b.y - 15)
+  ctx.fillStyle = drop.combo >= 10 ? pal.gold : '#effff9'; ctx.fillText(label, x, b.y - 15)
+  ctx.font = '700 11px monospace'
+  const mult = `×${drop.mult.toFixed(1)}${drop.overdriveTime > 0 ? ' · SURGE' : ''}`
+  ctx.strokeText(mult, x, b.y + 3); ctx.fillStyle = pal.accent; ctx.fillText(mult, x, b.y + 3)
+  // Depleting chain window is real timing information, not decorative animation.
+  const left = Math.max(0, Math.min(1, drop.comboTimer / drop.profile.comboWindow))
+  ctx.fillStyle = '#02080dcc'; ctx.fillRect(side > 0 ? x : x - 56, b.y + 15, 56, 3)
+  ctx.fillStyle = pal.accent; ctx.fillRect(side > 0 ? x : x - 56, b.y + 15, 56 * left, 3)
+  ctx.restore()
 }
 
 function drawPegs(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, input: DrawInput) {
@@ -462,6 +537,11 @@ function drawBumpers(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
   for (let bi = 0; bi < board.bumpers.length; bi++) {
     const b = board.bumpers[bi]
     const flash = Math.max(0, drop.bumperFlash[bi] ?? 0)
+    if (b.relay != null && board.encounter) {
+      drawGuardianRelay(ctx, b, flash, board, drop, pal)
+      continue
+    }
+    if (b.core) drawCoreSeal(ctx, b.x, b.y, b.r, drop, pal, time)
     if (b.core && drop.coreOpen) {
       ctx.strokeStyle = hexAlpha(pal.gold, 0.6 + 0.3 * Math.sin(time * 6))
       ctx.lineWidth = 3
@@ -535,9 +615,191 @@ function drawBumpers(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
   }
 }
 
+/** Guardian targets have a collision-driven material and a persistent, non-color state. */
+function drawGuardianRelay(ctx: CanvasRenderingContext2D, b: Bumper, flash: number, board: Board, drop: Drop, pal: Palette) {
+  const encounter = board.encounter!
+  const id = b.relay!
+  const bell = encounter.id === 'bellkeeper'
+  const credited = drop.encounterComplete || (bell && !!drop.relayHits[id])
+  const target = !credited && drop.encounterTargets.includes(id)
+  const cyan = '#94f7ed'
+  const state = credited ? pal.gold : target ? cyan : pal.steel
+  const r = b.r
+  ctx.save(); ctx.translate(b.x, b.y)
+
+  if (bell && credited) {
+    // Linked bells physically retract. A hollow seal records the credit without
+    // suggesting a solid bumper remains in the newly opened lane.
+    ctx.strokeStyle = hexAlpha(pal.gold, .6); ctx.lineWidth = 1.5
+    ctx.beginPath(); ctx.arc(0, 0, r + 10, 0, Math.PI * 2); ctx.stroke()
+    ctx.setLineDash([3, 6]); ctx.strokeStyle = pal.gold + '48'
+    ctx.beginPath(); ctx.arc(0, 0, r - 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([])
+    if (flash > .04) {
+      // The just-struck bell withdraws as an outline, leaving the lane visibly open.
+      ctx.save(); ctx.globalAlpha = flash * .5
+      ctx.translate(0, -r * .12 - (1 - flash) * 8)
+      ctx.rotate(Math.sin(flash * 12) * flash * .28)
+      ctx.strokeStyle = pal.gold; ctx.lineWidth = 1.2
+      ctx.beginPath(); ctx.moveTo(-r * .62, r * .36)
+      ctx.bezierCurveTo(-r * .36, 0, -r * .48, -r * .55, 0, -r * .59)
+      ctx.bezierCurveTo(r * .48, -r * .55, r * .36, 0, r * .62, r * .36)
+      ctx.closePath(); ctx.stroke()
+      const swing = Math.sin(flash * 18) * flash * r * .17
+      ctx.beginPath(); ctx.moveTo(0, -r * .1); ctx.lineTo(swing, r * .45); ctx.stroke()
+      ctx.restore()
+    }
+    ctx.strokeStyle = pal.gold; ctx.lineWidth = 3; ctx.lineCap = 'round'
+    ctx.beginPath(); ctx.moveTo(-r * .25, 0); ctx.lineTo(-r * .04, r * .2)
+    ctx.lineTo(r * .35, -r * .25); ctx.stroke()
+    ctx.font = '700 11px Outfit, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = pal.gold
+    ctx.fillText(['I', 'II', 'III'][id] ?? String(id + 1), 0, r + 27)
+    ctx.restore(); return
+  }
+
+  // Recessed mount and ring: the visible circle remains the actual collision boundary.
+  ctx.fillStyle = '#01060c'; ctx.beginPath(); ctx.arc(1, 5, r + 7, 0, Math.PI * 2); ctx.fill()
+  const mount = ctx.createLinearGradient(-r, -r, r, r)
+  mount.addColorStop(0, '#d3c9ac'); mount.addColorStop(.22, '#384f56')
+  mount.addColorStop(.62, '#09141b'); mount.addColorStop(1, '#867256')
+  ctx.beginPath(); ctx.arc(0, 0, r + 4, 0, Math.PI * 2)
+  ctx.fillStyle = mount; ctx.fill()
+  ctx.lineWidth = 1.5; ctx.strokeStyle = pal.frame + '80'; ctx.stroke()
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2)
+  ctx.fillStyle = '#051119'; ctx.fill()
+  ctx.lineWidth = 3; ctx.strokeStyle = hexAlpha(state, credited || target ? .95 : .35); ctx.stroke()
+  // Four honest mounting screws make the targets feel embedded in the cabinet.
+  for (let i = 0; i < 4; i++) {
+    const a = Math.PI / 4 + i * Math.PI / 2
+    const sx = Math.cos(a) * (r + 1), sy = Math.sin(a) * (r + 1)
+    ctx.fillStyle = '#080e15'; ctx.beginPath(); ctx.arc(sx, sy, 2, 0, Math.PI * 2); ctx.fill()
+    ctx.strokeStyle = '#dfd5ae80'; ctx.lineWidth = .8
+    ctx.beginPath(); ctx.moveTo(sx - 1, sy - 1); ctx.lineTo(sx + 1, sy + 1); ctx.stroke()
+  }
+
+  // Mechanical reactions are driven only by the corresponding contact flash.
+  if (bell) {
+    ctx.save()
+    ctx.translate(0, -r * .12)
+    ctx.rotate(Math.sin(flash * 12) * flash * .28)
+    const brass = ctx.createLinearGradient(-r * .65, 0, r * .65, 0)
+    brass.addColorStop(0, '#896a35'); brass.addColorStop(.34, credited ? '#fff0a6' : '#e5c58d')
+    brass.addColorStop(.62, '#b89c63'); brass.addColorStop(1, '#63482b')
+    ctx.fillStyle = brass
+    ctx.beginPath(); ctx.moveTo(-r * .65, r * .38)
+    ctx.bezierCurveTo(-r * .38, r * .05, -r * .5, -r * .55, 0, -r * .59)
+    ctx.bezierCurveTo(r * .5, -r * .55, r * .38, r * .05, r * .65, r * .38)
+    ctx.closePath(); ctx.fill()
+    ctx.strokeStyle = '#ffedbc90'; ctx.lineWidth = 1; ctx.stroke()
+    ctx.fillStyle = '#241d15'; ctx.beginPath()
+    ctx.ellipse(0, r * .39, r * .65, r * .1, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.strokeStyle = credited ? pal.gold : '#e8ce93'; ctx.lineWidth = 2.5; ctx.stroke()
+    // The clapper swings separately inside the bell after a physical strike.
+    ctx.save(); ctx.rotate(Math.sin(flash * 18) * flash * .45)
+    ctx.strokeStyle = '#c2ac78'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.moveTo(0, -r * .03); ctx.lineTo(0, r * .45); ctx.stroke()
+    ctx.beginPath(); ctx.arc(0, r * .46, r * .1, 0, Math.PI * 2)
+    ctx.fillStyle = '#f4dfac'; ctx.fill(); ctx.restore()
+    ctx.beginPath(); ctx.arc(0, -r * .64, r * .085, 0, Math.PI * 2); ctx.fillStyle = '#e5c58d'; ctx.fill()
+    ctx.restore()
+  } else {
+    // Twin piston cartridges have a clear numbered identity and a real recoil stroke.
+    const recoil = flash * r * .18
+    ctx.fillStyle = '#111f29'; ctx.strokeStyle = '#95afba70'; ctx.lineWidth = 1
+    roundRect(ctx, -r * .58, -r * .67, r * 1.16, r * 1.3, 5); ctx.fill(); ctx.stroke()
+    for (const side of [-1, 1]) {
+      const shaft = ctx.createLinearGradient(side * r * .4 - 2, 0, side * r * .4 + 2, 0)
+      shaft.addColorStop(0, '#536874'); shaft.addColorStop(.5, '#e7ecdf'); shaft.addColorStop(1, '#4e5e65')
+      ctx.fillStyle = shaft; ctx.fillRect(side * r * .4 - 2, -r * .58, 4, r * 1.04)
+    }
+    const piston = ctx.createLinearGradient(0, -r * .4, 0, r * .28)
+    piston.addColorStop(0, target ? '#b0fcf2' : '#9aaeb6')
+    piston.addColorStop(.16, '#415c64'); piston.addColorStop(.8, '#142832'); piston.addColorStop(1, '#b4a27a')
+    roundRect(ctx, -r * .52, -r * .4 + recoil, r * 1.04, r * .65, 4)
+    ctx.fillStyle = piston; ctx.fill(); ctx.strokeStyle = state + '80'; ctx.stroke()
+    ctx.strokeStyle = target ? cyan : '#8da5ac60'; ctx.lineWidth = 1.5
+    for (let j = 0; j < 3; j++) {
+      const yy = -r * .2 + j * r * .13 + recoil
+      ctx.beginPath(); ctx.moveTo(-r * .32, yy); ctx.lineTo(r * .32, yy); ctx.stroke()
+    }
+  }
+
+  // Large glyphs and explicit marks distinguish NEXT, credited, and idle targets.
+  const label = ['I', 'II', 'III'][id] ?? String(id + 1)
+  ctx.font = `800 ${Math.max(13, r * .43)}px Outfit, sans-serif`
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.strokeStyle = '#02070c'; ctx.lineWidth = 4
+  ctx.strokeText(label, 0, r * .64); ctx.fillStyle = credited ? pal.gold : '#f3f8ec'; ctx.fillText(label, 0, r * .64)
+  const rr = r + 13
+  if (credited) {
+    ctx.strokeStyle = pal.gold; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.arc(0, 0, rr, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(rr - 8, -rr + 4); ctx.lineTo(rr - 3, -rr + 9); ctx.lineTo(rr + 7, -rr - 3); ctx.stroke()
+  } else if (target) {
+    ctx.strokeStyle = cyan; ctx.lineWidth = 2
+    for (let i = 0; i < 4; i++) {
+      const a = i * Math.PI / 2
+      ctx.beginPath(); ctx.arc(0, 0, rr, a + .18, a + 1.12); ctx.stroke()
+    }
+    if (!bell) {
+      ctx.fillStyle = '#03131a'; roundRect(ctx, -23, -rr - 22, 46, 17, 4); ctx.fill()
+      ctx.fillStyle = cyan; ctx.font = '800 11px Outfit, sans-serif'; ctx.fillText('NEXT', 0, -rr - 13)
+      ctx.beginPath(); ctx.moveTo(-4, -rr - 3); ctx.lineTo(0, -rr + 2); ctx.lineTo(4, -rr - 3); ctx.lineWidth = 1.5; ctx.stroke()
+    }
+  }
+  if (flash > .05) {
+    ctx.strokeStyle = hexAlpha('#fff9d8', flash * .8); ctx.lineWidth = 2 + flash * 2
+    ctx.beginPath(); ctx.arc(0, 0, r + flash * 8, 0, Math.PI * 2); ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function drawCoreSeal(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, drop: Drop, pal: Palette, time: number) {
+  ctx.save(); ctx.translate(x, y)
+  const rr = r + 37
+  // The five broad seals are the boss health display; damage physically opens the ring.
+  ctx.lineWidth = 9; ctx.lineCap = 'butt'
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + i * Math.PI * 2 / 5
+    ctx.strokeStyle = i < drop.coreHits ? pal.gold + '40' : '#030910'
+    ctx.beginPath(); ctx.arc(0, 0, rr, a + .075, a + Math.PI * 2 / 5 - .075); ctx.stroke()
+    ctx.lineWidth = 3
+    ctx.strokeStyle = i < drop.coreHits ? pal.gold : drop.coreHits >= 2 ? pal.danger : pal.accent
+    ctx.beginPath(); ctx.arc(0, 0, rr, a + .075, a + Math.PI * 2 / 5 - .075); ctx.stroke()
+    ctx.lineWidth = 9
+    const ax = Math.cos(a + .62), ay = Math.sin(a + .62)
+    ctx.fillStyle = i < drop.coreHits ? pal.gold : pal.frame + '60'
+    ctx.beginPath(); ctx.arc(ax * (rr + 10), ay * (rr + 10), 2.4, 0, Math.PI * 2); ctx.fill()
+  }
+  if (!drop.coreOpen) {
+    const danger = drop.coreHits >= 2
+    // A slow-moving segmented threat orbit communicates the phase escalation.
+    ctx.strokeStyle = hexAlpha(danger ? pal.danger : pal.accent, danger ? .45 : .22)
+    ctx.lineWidth = 1.5
+    for (let i = 0; i < 3; i++) {
+      const a = -time * .28 + i * Math.PI * 2 / 3
+      ctx.beginPath(); ctx.arc(0, 0, rr + 18, a, a + .5); ctx.stroke()
+    }
+  }
+  ctx.textAlign = 'center'; ctx.font = '700 11px monospace'
+  ctx.fillStyle = '#030910'; ctx.fillRect(-64, rr + 23, 128, 18)
+  ctx.fillStyle = drop.coreOpen ? pal.gold : drop.coreHits >= 2 ? pal.danger : pal.accent
+  ctx.fillText(drop.coreOpen ? 'CORE UNSEALED' : drop.coreHits >= 4 ? 'FINAL SEAL' : `${5 - drop.coreHits} SEALS · ${drop.coreHits >= 2 ? 'OVERCLOCK' : 'STABLE'}`, 0, rr + 35)
+  ctx.restore()
+}
+
 function drawPreview(ctx: CanvasRenderingContext2D, input: DrawInput, pal: Palette) {
   const pts = input.preview
   const flow = Math.floor(input.time * 16)
+  // A solid launch segment establishes direction immediately; later uncertainty fades.
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+  ctx.beginPath()
+  for (let i = 0; i < Math.min(14, pts.length); i++) {
+    const p = pts[i]
+    if (!i) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y)
+  }
+  ctx.strokeStyle = pal.accent + '22'; ctx.lineWidth = 11; ctx.stroke()
+  ctx.strokeStyle = '#eafff1a0'; ctx.lineWidth = 1.5; ctx.stroke()
+  ctx.restore()
   ctx.globalCompositeOperation = 'lighter'
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i]
@@ -560,6 +822,40 @@ function drawPreview(ctx: CanvasRenderingContext2D, input: DrawInput, pal: Palet
   }
   ctx.globalAlpha = 1
   ctx.globalCompositeOperation = 'source-over'
+  if (input.board && input.drop) {
+    const board = input.board, drop = input.drop
+    // Highlight the first predicted contact using the same world path, without adding simulation work.
+    let target = -1
+    for (let p = 1; p < pts.length && target < 0; p++) {
+      for (let i = 0; i < board.pegs.length; i++) {
+        const peg = board.pegs[i]
+        const pos = pegPose(peg, drop.time, 1)
+        if (Math.hypot(pts[p].x - pos.x, pts[p].y - pos.y) < peg.r + drop.ball.r + 5) { target = i; break }
+      }
+    }
+    if (target >= 0) {
+      const peg = board.pegs[target], p = pegPose(peg, drop.time, 1)
+      const color = peg.kind === 'gold' ? pal.gold : pal.accent
+      const rr = peg.r + drop.ball.r + 8
+      ctx.strokeStyle = color; ctx.lineWidth = 2
+      for (let k = 0; k < 4; k++) {
+        const a = Math.PI * k / 2
+        ctx.beginPath(); ctx.arc(p.x, p.y, rr, a + .2, a + 1.15); ctx.stroke()
+      }
+      ctx.font = '700 10px monospace'; ctx.textAlign = 'center'
+      const text = peg.kind === 'gold' ? 'GOLD CONTACT' : 'FIRST CONTACT'
+      const w = ctx.measureText(text).width + 16
+      const labelX = Math.max(board.margin + w / 2 + 8, Math.min(board.w - board.margin - w / 2 - 8, p.x))
+      let labelY = p.y - rr - 23
+      const overlapsLauncher = labelX + w / 2 > board.launchX - 85 &&
+        labelX - w / 2 < board.launchX + 85 &&
+        labelY + 17 > board.launchY - 30 && labelY < board.launchY + 105
+      if (overlapsLauncher) labelY = p.y + rr + 9
+      roundRect(ctx, labelX - w / 2, labelY, w, 17, 4)
+      ctx.fillStyle = '#030b12ee'; ctx.fill(); ctx.fillStyle = color
+      ctx.fillText(text, labelX, labelY + 12)
+    }
+  }
 }
 
 function drawLauncher(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pal: Palette, input: DrawInput) {
@@ -589,6 +885,20 @@ function drawLauncher(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, p
     ctx.fill()
   }
   ctx.restore()
+  if (input.aiming) {
+    // Degree readout and symmetric brackets turn the launcher into a precision instrument.
+    ctx.save(); ctx.textAlign = 'center'; ctx.font = '700 10px monospace'
+    ctx.fillStyle = pal.accent
+    const deg = Math.round(input.aimAngle * 180 / Math.PI)
+    ctx.fillText(`${deg > 0 ? '+' : ''}${deg}°`, x, y + 91)
+    ctx.strokeStyle = pal.accent + '80'; ctx.lineWidth = 1.5
+    for (const side of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(x + side * 66, y - 12)
+      ctx.lineTo(x + side * 74, y - 12); ctx.lineTo(x + side * 74, y + 12)
+      ctx.lineTo(x + side * 66, y + 12); ctx.stroke()
+    }
+    ctx.restore()
+  }
   ctx.lineCap = 'round'
   ctx.strokeStyle = pal.frameDeep
   ctx.lineWidth = 7
@@ -943,9 +1253,32 @@ function drawShutter(ctx: CanvasRenderingContext2D, board: Board, drop: Drop, pa
   }
 }
 
-function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time: number) {
+function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time: number, motion: boolean) {
   const b = drop.ball
-  const color = trail || drop.ballDef.accent
+  const surge = drop.overdriveTime > 0
+  const color = surge ? '#ffe9a3' : trail || drop.ballDef.accent
+  // A hard dark isolation ring keeps the sphere distinct from illuminated peg heads.
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 3, 0, Math.PI * 2)
+  ctx.fillStyle = '#020710'; ctx.fill()
+  if (surge || drop.overdriveReady) {
+    ctx.save(); ctx.translate(b.x, b.y)
+    const rr = b.r + (surge ? 20 : 11)
+    ctx.strokeStyle = surge ? '#ffe9a3' : drop.ballDef.accent
+    ctx.lineWidth = surge ? 3 : 1.6
+    for (let i = 0; i < 3; i++) {
+      const a = (motion ? time * (surge ? 2.6 : .8) : 0) + i * Math.PI * 2 / 3
+      ctx.beginPath(); ctx.arc(0, 0, rr, a, a + 1.3); ctx.stroke()
+    }
+    if (surge && motion) {
+      const field = ctx.createRadialGradient(0, 0, b.r + 4, 0, 0, 88)
+      field.addColorStop(0, '#ffedbb22'); field.addColorStop(1, '#ffedbb00')
+      ctx.fillStyle = field; ctx.fillRect(-88, -88, 176, 176)
+      ctx.strokeStyle = '#ffe9a340'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.ellipse(0, 0, 55, 19, -time * .8, 0, Math.PI * 2); ctx.stroke()
+      ctx.beginPath(); ctx.ellipse(0, 0, 55, 19, time * .8, 0, Math.PI * 2); ctx.stroke()
+    }
+    ctx.restore()
+  }
   if (drop.ballDef.id === 'void') {
     ctx.save()
     ctx.translate(b.x, b.y)
@@ -966,7 +1299,9 @@ function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time
       const a = drop.trail[i - 1]
       const c = drop.trail[i]
       const k = i / n
-      ctx.strokeStyle = hexAlpha(color, k * 0.5)
+      // Teleports never leave a misleading straight line across the whole machine.
+      if (Math.hypot(c.x - a.x, c.y - a.y) > 150) continue
+      ctx.strokeStyle = hexAlpha(color, k * (surge ? .75 : .5))
       ctx.lineWidth = k * b.r * 1.5
       ctx.beginPath()
       ctx.moveTo(a.x, a.y)
@@ -977,12 +1312,14 @@ function drawBall(ctx: CanvasRenderingContext2D, drop: Drop, trail: string, time
       ctx.stroke()
     }
     const head = drop.trail[n - 1]
-    ctx.strokeStyle = hexAlpha(color, 0.5)
-    ctx.lineWidth = b.r * 1.5
-    ctx.beginPath()
-    ctx.moveTo(head.x, head.y)
-    ctx.lineTo(b.x, b.y)
-    ctx.stroke()
+    if (Math.hypot(b.x - head.x, b.y - head.y) <= 150) {
+      ctx.strokeStyle = hexAlpha(color, 0.5)
+      ctx.lineWidth = b.r * 1.5
+      ctx.beginPath()
+      ctx.moveTo(head.x, head.y)
+      ctx.lineTo(b.x, b.y)
+      ctx.stroke()
+    }
   }
   const heat = Math.min(1, drop.combo / 12)
   glow(ctx, color, b.x, b.y, b.r * (3.2 + heat * 2), 0.4 + heat * 0.4)

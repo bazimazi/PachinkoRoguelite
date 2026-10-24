@@ -1,6 +1,7 @@
 import type { Palette } from './palette'
 import type { BallDef } from '../content/catalog'
 import type { Board } from '../sim/board'
+import { drawMachineRelief } from './machinery'
 
 const TAU = Math.PI * 2
 const noise = (n: number) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v) }
@@ -29,16 +30,40 @@ export function drawAtmosphere(ctx: CanvasRenderingContext2D, w: number, h: numb
   ctx.fillRect(0, 0, w, h)
   halo(ctx, w * 0.7, h * 0.4, Math.max(w, h) * 0.58, pal.accent + '16')
   halo(ctx, w * 0.1, h * 0.92, h * 0.65, pal.well + '12')
-  // Architectural ribs create depth without competing with the board.
-  ctx.strokeStyle = pal.frame + '0d'
+  // The machine lives inside a vaulted observatory, with a clear vanishing point.
+  const horizon = h * .34
+  ctx.fillStyle = '#01060b55'
+  ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w * .32, horizon)
+  ctx.lineTo(w * .68, horizon); ctx.lineTo(w, h); ctx.closePath(); ctx.fill()
+  ctx.strokeStyle = pal.frame + '13'
   ctx.lineWidth = 1
-  for (let i = 0; i < 5; i++) {
-    const x = w * (0.12 + i * 0.2)
+  for (let i = 0; i < 7; i++) {
+    const x = w * (i / 6)
     ctx.beginPath()
     ctx.moveTo(x, h)
-    ctx.lineTo(x, h * 0.26)
-    ctx.bezierCurveTo(x, -h * 0.1, w - x, -h * 0.1, w - x, h * 0.26)
+    ctx.lineTo(w / 2 + (x - w / 2) * .2, horizon)
     ctx.stroke()
+  }
+  for (let i = 1; i <= 6; i++) {
+    const p = (i / 6) ** 2
+    const y = horizon + p * (h - horizon)
+    ctx.strokeStyle = pal.accent + '0d'
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke()
+  }
+  for (const side of [0, 1]) {
+    ctx.save(); ctx.translate(side ? w : 0, 0); ctx.scale(side ? -1 : 1, 1)
+    for (let i = 0; i < 3; i++) {
+      const x = w * (.045 + i * .065)
+      const rib = ctx.createLinearGradient(x, 0, x + 15, 0)
+      rib.addColorStop(0, '#00000000'); rib.addColorStop(.5, pal.frame + '11'); rib.addColorStop(1, '#00000025')
+      ctx.fillStyle = rib
+      ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, h * .2)
+      ctx.bezierCurveTo(x, h * .06, w * .3, -h * .08, w * .5, -h * .15)
+      ctx.lineTo(w * .5, -h * .13)
+      ctx.bezierCurveTo(w * .3, -h * .06, x + 12, h * .08, x + 12, h * .2)
+      ctx.lineTo(x + 12, h); ctx.closePath(); ctx.fill()
+    }
+    ctx.restore()
   }
   ctx.save()
   ctx.translate(w * 0.7, h * 0.43)
@@ -81,6 +106,31 @@ export function drawAstrolabe(ctx: CanvasRenderingContext2D, w: number, h: numbe
   halo(ctx, 0, 0, r * 2.5, ball.accent + '22')
   const bob = Math.sin(time * 0.7) * 7
   ctx.translate(0, bob)
+  // A cut-metal specimen cradle gives the hero sphere weight and a deliberate silhouette.
+  ctx.save()
+  ctx.rotate(-.32)
+  const cradle = ctx.createLinearGradient(-r, -r, r, r)
+  cradle.addColorStop(0, '#f5d8a1'); cradle.addColorStop(.3, '#8f7654')
+  cradle.addColorStop(.5, '#263e45'); cradle.addColorStop(.75, '#b39769'); cradle.addColorStop(1, '#4a3d2c')
+  ctx.shadowColor = '#000000b0'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 15
+  ctx.lineWidth = r * .052; ctx.strokeStyle = cradle
+  for (let i = 0; i < 3; i++) {
+    const a = i * TAU / 3
+    ctx.beginPath(); ctx.arc(0, 0, r * 1.27, a + .22, a + 1.87); ctx.stroke()
+  }
+  ctx.shadowBlur = 0; ctx.shadowOffsetY = 0
+  for (let i = 0; i < 6; i++) {
+    const a = i * TAU / 6
+    ctx.save(); ctx.rotate(a)
+    ctx.beginPath(); ctx.moveTo(r * .99, -r * .035)
+    ctx.lineTo(r * 1.31, -r * .07); ctx.lineTo(r * 1.39, 0)
+    ctx.lineTo(r * 1.31, r * .07); ctx.lineTo(r * .99, r * .035)
+    ctx.closePath(); ctx.fillStyle = cradle; ctx.fill()
+    ctx.strokeStyle = '#eddbb650'; ctx.lineWidth = 1; ctx.stroke()
+    circle(ctx, r * 1.18, 0, r * .022); ctx.fillStyle = '#061118'; ctx.fill()
+    ctx.restore()
+  }
+  ctx.restore()
   // Fine dial, minute marks and slowly rotating gold arcs.
   for (let i = 0; i < 3; i++) {
     circle(ctx, 0, 0, r * (1.18 + i * 0.17))
@@ -194,49 +244,9 @@ export function drawAstrolabe(ctx: CanvasRenderingContext2D, w: number, h: numbe
   ctx.restore()
 }
 
-const engravings = new Map<string, HTMLCanvasElement>()
-
 /** Cached cabinet engraving: static details are painted only once per board size/theme. */
 export function drawEngraving(ctx: CanvasRenderingContext2D, board: Board, pal: Palette, time: number) {
-  const key = `${board.theme}:${board.w}:${board.h}`
-  let layer = engravings.get(key)
-  if (!layer) {
-    layer = document.createElement('canvas')
-    layer.width = board.w
-    layer.height = board.h
-    const g = layer.getContext('2d')!
-    g.save()
-    g.strokeStyle = pal.accent + '13'
-    g.lineWidth = 1
-    for (let y = 170; y < board.floorY; y += 220) {
-      g.save()
-      g.translate(board.w / 2, y)
-      for (const r of [70, 116, 125]) { circle(g, 0, 0, r); g.stroke() }
-      g.rotate(Math.PI / 4)
-      g.strokeRect(-83, -83, 166, 166)
-      g.restore()
-    }
-    for (const x of [68, board.w - 68]) {
-      g.strokeStyle = pal.frame + '40'
-      g.beginPath()
-      g.moveTo(x, 90)
-      g.lineTo(x, board.h - 70)
-      g.stroke()
-      for (let y = 100; y < board.h - 60; y += 24) {
-        g.fillStyle = pal.frame + '40'
-        g.fillRect(x - 3, y, 6, 1)
-      }
-    }
-    g.font = '10px Outfit, sans-serif'
-    g.textAlign = 'center'
-    g.fillStyle = pal.frame + '70'
-    g.fillText('H E L I X   /   G R A V I T A T I O N A L   E N G I N E', board.w / 2, board.h - 37)
-    g.restore()
-    // Bound the cache even if future procedural layouts introduce many sizes.
-    if (engravings.size >= 12) engravings.delete(engravings.keys().next().value!)
-    engravings.set(key, layer)
-  }
-  ctx.drawImage(layer, 0, 0)
+  drawMachineRelief(ctx, board, pal)
   ctx.save()
   // Traveling rail lights give the machine a constant sense of downward energy.
   for (let j = 0; j < 2; j++) {
