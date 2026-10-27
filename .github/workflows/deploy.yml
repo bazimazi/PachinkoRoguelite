@@ -15,7 +15,7 @@ concurrency:
 
 env:
   # Served at https://<GAME>.bazimazi.games
-  GAME: plumb
+  GAME: pachinko-roguelite
 
 jobs:
   build:
